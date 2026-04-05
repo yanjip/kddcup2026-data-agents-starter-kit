@@ -66,6 +66,11 @@ def parse_model_step(raw_response: str) -> ModelStep:
     )
 
 
+@dataclass(frozen=True, slots=True)
+class SchemaKnowledge:
+    tables: dict[str, list[str]]
+    semantic_mappings: dict[str, str]
+
 class ReActAgent:
     def __init__(
         self,
@@ -80,11 +85,83 @@ class ReActAgent:
         self.config = config or ReActAgentConfig()
         self.system_prompt = system_prompt or REACT_SYSTEM_PROMPT
 
-    def _build_messages(self, task: PublicTask, state: AgentRuntimeState) -> list[ModelMessage]:
+    def _auto_load_schema_knowledge(self, task: PublicTask) -> SchemaKnowledge | None:
+        try:
+            list_result = self.tools.execute(task, "list_context", {"max_depth": 4})
+            if not list_result.ok:
+                return None
+            
+            entries = list_result.content.get("entries", [])
+            knowledge_path = None
+            for entry in entries:
+                if entry.get("kind") == "file" and entry.get("path", "").endswith("knowledge.md"):
+                    knowledge_path = entry["path"]
+                    break
+            
+            if not knowledge_path:
+                return None
+            
+            read_result = self.tools.execute(task, "read_doc", {"path": knowledge_path})
+            if not read_result.ok:
+                return None
+            
+            content = read_result.content.get("preview", "")
+            tables = self._parse_tables_from_knowledge(content)
+            semantic_mappings = self._parse_semantic_mappings_from_knowledge(content)
+            
+            return SchemaKnowledge(tables=tables, semantic_mappings=semantic_mappings)
+        except Exception:
+            return None
+
+    def _parse_tables_from_knowledge(self, content: str) -> dict[str, list[str]]:
+        tables = {}
+        lines = content.split('\n')
+        current_table = None
+        
+        for line in lines:
+            line = line.strip()
+            if line.startswith('### '):
+                current_table = line[4:].strip()
+                tables[current_table] = []
+            elif current_table and line.startswith('- **'):
+                column_match = line.split('**')[1]
+                if ':' in column_match:
+                    column_name = column_match.split(':')[0].strip()
+                    tables[current_table].append(column_name)
+        
+        return tables
+
+    def _parse_semantic_mappings_from_knowledge(self, content: str) -> dict[str, str]:
+        mappings = {}
+        lines = content.split('\n')
+        
+        for line in lines:
+            line = line.strip()
+            if ':**' in line and ('**' in line):
+                parts = line.split(':**')
+                if len(parts) == 2:
+                    key = parts[0].strip().replace('**', '')
+                    value = parts[1].strip().split('**')[0]
+                    mappings[key] = value
+        
+        return mappings
+
+    def _build_messages(self, task: PublicTask, state: AgentRuntimeState, schema_knowledge: SchemaKnowledge | None) -> list[ModelMessage]:
         system_content = build_system_prompt(
             self.tools.describe_for_prompt(),
             system_prompt=self.system_prompt,
         )
+        
+        if schema_knowledge:
+            schema_info = "\n\nSchema Knowledge:\n"
+            schema_info += "Tables and columns:\n"
+            for table, columns in schema_knowledge.tables.items():
+                schema_info += f"- {table}: {', '.join(columns)}\n"
+            schema_info += "\nSemantic mappings:\n"
+            for key, value in schema_knowledge.semantic_mappings.items():
+                schema_info += f"- {key}: {value}\n"
+            system_content += schema_info
+        
         messages = [ModelMessage(role="system", content=system_content)]
         messages.append(ModelMessage(role="user", content=build_task_prompt(task)))
         for step in state.steps:
@@ -95,9 +172,11 @@ class ReActAgent:
         return messages
 
     def run(self, task: PublicTask) -> AgentRunResult:
+        schema_knowledge = self._auto_load_schema_knowledge(task)
         state = AgentRuntimeState()
+        
         for step_index in range(1, self.config.max_steps + 1):
-            raw_response = self.model.complete(self._build_messages(task, state))
+            raw_response = self.model.complete(self._build_messages(task, state, schema_knowledge))
             try:
                 model_step = parse_model_step(raw_response)
                 tool_result = self.tools.execute(task, model_step.action, model_step.action_input)
