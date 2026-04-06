@@ -1,3 +1,21 @@
+
+## 优化内容
+### 1. 增强的系统提示词 (react.py)
+- 新增 F1时间格式处理 说明：明确指出"0:01:54"应理解为"1:54"格式
+- 新增 近似匹配 指导：当没有精确匹配时，应该找最接近的值
+- 强调 当找到可能的答案时立即提交 （即使答案是近似的）
+### 2. 停滞检测机制 (react.py)
+- _detect_stalling() 方法检测重复的Python执行模式
+- 当连续4步执行相同的action时，自动发出提示让agent换策略
+### 3. 反思提示机制 (react.py)
+- _build_reflection_prompt() 在剩余步骤≤3时触发
+- 提供关键问题引导agent回顾已收集的数据
+- 提醒agent检查是否有足够信息回答问题
+### 4. 更新 _build_messages 方法 (react.py)
+- 新增 reflection_hint 参数
+- 当检测到停滞或接近max_steps时，自动注入反思指导
+
+
 ## 架构说明
 ### 1. 新增文件
 - subagent.py - 包含新的subagent架构实现
@@ -44,19 +62,52 @@ yaml --agent-type orchestrator
 子agent会继承父agent的完整上下文，独立执行任务并将结果返回给主agent进行合成。
 
 
+根据代码分析，这两个文件的关系如下：
 
-## 优化内容
-### 1. 增强的系统提示词 (react.py)
-- 新增 F1时间格式处理 说明：明确指出"0:01:54"应理解为"1:54"格式
-- 新增 近似匹配 指导：当没有精确匹配时，应该找最接近的值
-- 强调 当找到可能的答案时立即提交 （即使答案是近似的）
-### 2. 停滞检测机制 (react.py)
-- _detect_stalling() 方法检测重复的Python执行模式
-- 当连续4步执行相同的action时，自动发出提示让agent换策略
-### 3. 反思提示机制 (react.py)
-- _build_reflection_prompt() 在剩余步骤≤3时触发
-- 提供关键问题引导agent回顾已收集的数据
-- 提醒agent检查是否有足够信息回答问题
-### 4. 更新 _build_messages 方法 (react.py)
-- 新增 reflection_hint 参数
-- 当检测到停滞或接近max_steps时，自动注入反思指导
+## 引用关系
+
+**subagent.py 引用了 react.py 的内容：**
+
+```python
+# subagent.py 第 6-9 行
+from data_agent_baseline.agents.prompt import (
+    REACT_SYSTEM_PROMPT,          # ← 来自 react.py 定义的常量
+    build_observation_prompt,
+    build_system_prompt,
+    build_task_prompt,
+)
+
+from data_agent_baseline.agents.runtime import AgentRuntimeState, StepRecord  # ← 共享的数据类
+```
+
+**react.py 不引用 subagent.py 的任何内容**
+
+---
+
+## 两者关系
+
+| 文件 | 角色 | 说明 |
+|------|------|------|
+| [react.py](file:///Users/yanjp/PycharmProjects/kddcup2026-data-agents-starter-kit/src/data_agent_baseline/agents/react.py) | 基础代理 | 定义 `ReActAgent`，单一代理模式，独立完成任务 |
+| [subagent.py](file:///Users/yanjp/PycharmProjects/kddcup2026-data-agents-starter-kit/src/data_agent_baseline/agents/subagent.py) | 扩展代理 | 定义 `OrchestratorAgent`（编排器）和 `SubAgent`（子代理） |
+
+## 层次结构
+
+```
+ReActAgent (react.py)
+    └── 独立完成任务的单一代理
+         - 循环调用 model.complete() + tools.execute()
+         - max_steps 次迭代
+
+OrchestratorAgent (subagent.py)  ← 高级代理
+    ├── 管理工作流程，决定何时 fork
+    ├── fork_subagent action → 创建 SubAgent
+    │
+    └── SubAgent (subagent.py)  ← 使用 REACT_SYSTEM_PROMPT
+        ├── 继承 OrchestratorAgent 的上下文
+        └── 也是 ReAct 风格的代理
+```
+
+**关键点**：`OrchestratorAgent` 和 `SubAgent` 都使用了 `REACT_SYSTEM_PROMPT`（定义在 react.py），但它们的架构不同：
+- `ReActAgent`：单一代理，自我循环
+- `OrchestratorAgent`：编排器，可以 fork 多个 `SubAgent` 并行执行子任务

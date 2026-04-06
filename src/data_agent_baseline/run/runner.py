@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import json
 import multiprocessing
+import re
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -58,6 +59,24 @@ def resolve_run_id(run_id: str | None = None) -> str:
 def create_run_output_dir(output_root: Path, *, run_id: str | None = None) -> tuple[str, Path]:
     effective_run_id = resolve_run_id(run_id)
     run_output_dir = output_root / effective_run_id
+
+    if run_output_dir.exists():
+        base_run_id = effective_run_id
+        match = re.match(r"^(.+_)(\d+)$", base_run_id)
+        if match:
+            prefix, num_str = match.groups()
+            start_num = int(num_str)
+        else:
+            prefix = base_run_id + "_"
+            start_num = 0
+
+        while True:
+            effective_run_id = f"{prefix}{start_num + 1}"
+            run_output_dir = output_root / effective_run_id
+            if not run_output_dir.exists():
+                break
+            start_num += 1
+
     run_output_dir.mkdir(parents=True, exist_ok=False)
     return effective_run_id, run_output_dir
 
