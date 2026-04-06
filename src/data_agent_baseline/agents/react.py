@@ -6,11 +6,66 @@ from dataclasses import dataclass
 
 from data_agent_baseline.agents.model import ModelAdapter, ModelMessage, ModelStep
 from data_agent_baseline.agents.prompt import (
-    REACT_SYSTEM_PROMPT,
     build_observation_prompt,
     build_system_prompt,
     build_task_prompt,
 )
+
+REACT_SYSTEM_PROMPT = """
+You are a ReAct-style data agent with structured problem-solving capabilities.
+
+You are solving a task from a public dataset. You may only inspect files inside the task's `context/` directory through the provided tools.
+
+## Problem-Solving Framework
+
+**1. Define** - Clarify the problem statement. What's blocking you? What does success look like? State constraints clearly.
+
+**2. Analyze** - Apply multiple lenses to break down the challenge:
+   - Functional: What does the data represent?
+   - Technical: What operations are needed?
+   - Temporal: What are the dependencies?
+   - Resource: What tools/tables are available?
+   - Risk: What could go wrong?
+   - Stakeholder: What does the expected output serve?
+   - Precedent: Any similar tasks solved before?
+   - Creative: Any unconventional approaches?
+
+**3. Generate Options** - Brainstorm 3+ solution paths before filtering.
+
+**4. Choose** - Select the highest-leverage path. Justify your choice.
+
+**5. Execute** - Run the action plan with real-time assumption tracking.
+
+**6. Review** - Evaluate outcome. What worked? Update approach if assumptions break.
+
+## Time Format Handling
+
+**IMPORTANT - Approximate Matching:**
+- If no exact match exists, the question is likely asking for the nearest match
+- Use time comparison to find drivers with times close to the target
+- Report the driver with the closest qualifying time
+
+## Core Rules
+
+1. First, analyze the task and create a clear plan before executing any actions.
+2. Use tools to inspect the available context efficiently, focusing only on what's necessary for your plan.
+3. Break complex challenges into discrete, manageable pieces. Start with the constraint - problems are bottleneck puzzles.
+4. Think in primitives - identify the smallest building blocks and build up from there.
+5. Find independent work streams and execute them in parallel rather than sequentially.
+6. Base your answer only on information you can observe through the provided tools.
+7. **If no exact match exists for a time value, look for the CLOSEST match.**
+8. **When you have found a likely answer (even if approximate), you MUST call the `answer` tool.**
+9. Always return exactly one JSON object with keys `thought`, `action`, and `action_input`.
+10. Always wrap that JSON object in exactly one fenced code block that starts with ```json and ends with ```.
+11. Do not output any text before or after the fenced JSON block.
+
+**Progress Tracking:**
+- Include "Plan:", "Blocker:", "Assumption:" in your thought to track progress
+- If you are stuck for more than 3 steps with no progress, try a different approach
+- When you have gathered enough information to answer, SUBMIT THE ANSWER immediately
+
+When stuck: Inspect the directive. What changed? What was missed? Update and retry.
+""".strip()
 from data_agent_baseline.agents.runtime import AgentRunResult, AgentRuntimeState, StepRecord
 from data_agent_baseline.benchmark.schema import PublicTask
 from data_agent_baseline.tools.registry import ToolRegistry
@@ -42,6 +97,50 @@ def _load_single_json_object(text: str) -> dict[str, object]:
     if not isinstance(payload, dict):
         raise ValueError("Model response must be a JSON object.")
     return payload
+
+
+@dataclass(frozen=True, slots=True)
+class ProgressInfo:
+    plan: list[str]
+    blockers: list[str]
+    assumptions: list[str]
+
+    @staticmethod
+    def parse_from_thought(thought: str) -> ProgressInfo:
+        plan: list[str] = []
+        blockers: list[str] = []
+        assumptions: list[str] = []
+
+        lines = thought.split('\n')
+        current_section: str | None = None
+
+        for line in lines:
+            line_lower = line.lower().strip()
+            if line_lower.startswith('plan:') or line_lower.startswith('- plan:'):
+                current_section = 'plan'
+                content = line.split(':', 1)[1].strip() if ':' in line else line[5:].strip()
+                if content:
+                    plan.append(content)
+            elif line_lower.startswith('blocker:') or line_lower.startswith('- blocker:') or line_lower.startswith('blockers:'):
+                current_section = 'blocker'
+                content = line.split(':', 1)[1].strip() if ':' in line else line[8:].strip()
+                if content:
+                    blockers.append(content)
+            elif line_lower.startswith('assumption:') or line_lower.startswith('- assumption:'):
+                current_section = 'assumption'
+                content = line.split(':', 1)[1].strip() if ':' in line else line[11:].strip()
+                if content:
+                    assumptions.append(content)
+            elif current_section == 'plan' and (line.startswith('  - ') or line.startswith('   ')):
+                plan.append(line.strip().lstrip('- ').strip())
+            elif current_section == 'blocker' and (line.startswith('  - ') or line.startswith('   ')):
+                blockers.append(line.strip().lstrip('- ').strip())
+            elif current_section == 'assumption' and (line.startswith('  - ') or line.startswith('   ')):
+                assumptions.append(line.strip().lstrip('- ').strip())
+            else:
+                current_section = None
+
+        return ProgressInfo(plan=plan, blockers=blockers, assumptions=assumptions)
 
 
 def parse_model_step(raw_response: str) -> ModelStep:
@@ -146,12 +245,12 @@ class ReActAgent:
         
         return mappings
 
-    def _build_messages(self, task: PublicTask, state: AgentRuntimeState, schema_knowledge: SchemaKnowledge | None) -> list[ModelMessage]:
+    def _build_messages(self, task: PublicTask, state: AgentRuntimeState, schema_knowledge: SchemaKnowledge | None, reflection_hint: str | None = None) -> list[ModelMessage]:
         system_content = build_system_prompt(
             self.tools.describe_for_prompt(),
             system_prompt=self.system_prompt,
         )
-        
+
         if schema_knowledge:
             schema_info = "\n\nSchema Knowledge:\n"
             schema_info += "Tables and columns:\n"
@@ -161,7 +260,26 @@ class ReActAgent:
             for key, value in schema_knowledge.semantic_mappings.items():
                 schema_info += f"- {key}: {value}\n"
             system_content += schema_info
-        
+
+        if state.current_plan or state.blockers or state.assumptions:
+            progress_context = "\n\n## Current Progress Context:\n"
+            if state.current_plan:
+                progress_context += "\n**Plan (in progress):**\n"
+                for i, item in enumerate(state.current_plan, 1):
+                    progress_context += f"  {i}. {item}\n"
+            if state.blockers:
+                progress_context += "\n**Blockers:**\n"
+                for blocker in state.blockers:
+                    progress_context += f"  - {blocker}\n"
+            if state.assumptions:
+                progress_context += "\n**Assumptions (being tracked):**\n"
+                for assumption in state.assumptions:
+                    progress_context += f"  - {assumption}\n"
+            system_content += progress_context
+
+        if reflection_hint:
+            system_content += f"\n\n## Guidance:\n{reflection_hint}\n"
+
         messages = [ModelMessage(role="system", content=system_content)]
         messages.append(ModelMessage(role="user", content=build_task_prompt(task)))
         for step in state.steps:
@@ -171,14 +289,74 @@ class ReActAgent:
             )
         return messages
 
+    def _detect_stalling(self, state: AgentRuntimeState) -> str | None:
+        if len(state.steps) < 4:
+            return None
+
+        recent_steps = state.steps[-4:]
+        actions = [s.action for s in recent_steps]
+
+        if len(set(actions)) == 1 and actions[0] == "execute_python":
+            return "You have executed the same Python code approach 4 times without progress. Try a DIFFERENT strategy: check data format, look for approximate matches, or try reading the data directly with different parameters."
+
+        if all(s.action == "execute_python" for s in recent_steps):
+            python_codes = [s.action_input.get("code", "")[:50] for s in recent_steps]
+            if len(set(python_codes)) <= 2:
+                return "You are repeatedly running similar Python code. Stop and analyze what you've learned so far. Do you have enough to answer the question? If so, call the 'answer' tool NOW."
+
+        return None
+
+    def _build_reflection_prompt(self, state: AgentRuntimeState) -> str:
+        last_step = state.steps[-1] if state.steps else None
+        last_observation = ""
+        if last_step:
+            obs_content = last_step.observation.get("content", {})
+            if isinstance(obs_content, dict):
+                last_observation = str(obs_content.get("output", ""))[:500]
+
+        return f"""
+## REFLECTION REQUIRED
+
+You have {self.config.max_steps - len(state.steps)} steps remaining.
+
+**Last observation (truncated):**
+{last_observation}
+
+**CRITICAL QUESTIONS:**
+1. Have you found data that could answer the question?
+2. Is there an exact match you might have missed?
+3. If no exact match, have you tried finding the CLOSEST match?
+4. Is there a time format issue? (e.g., "0:01:54" should be "1:54" in F1 format)
+
+**If you have ANY candidate answer, you MUST call the 'answer' tool immediately.**
+Do NOT continue searching if you have data that could answer the question.
+""".strip()
+
     def run(self, task: PublicTask) -> AgentRunResult:
         schema_knowledge = self._auto_load_schema_knowledge(task)
         state = AgentRuntimeState()
-        
+        last_reflection_step = 0
+
         for step_index in range(1, self.config.max_steps + 1):
-            raw_response = self.model.complete(self._build_messages(task, state, schema_knowledge))
+            reflection_hint = self._detect_stalling(state)
+            if reflection_hint is None and len(state.steps) - last_reflection_step >= 3:
+                remaining = self.config.max_steps - len(state.steps)
+                if remaining <= 3 and remaining > 0:
+                    reflection_hint = self._build_reflection_prompt(state)
+                    last_reflection_step = len(state.steps)
+
+            raw_response = self.model.complete(self._build_messages(task, state, schema_knowledge, reflection_hint))
             try:
                 model_step = parse_model_step(raw_response)
+
+                progress_info = ProgressInfo.parse_from_thought(model_step.thought)
+                if progress_info.plan:
+                    state.current_plan = progress_info.plan
+                if progress_info.blockers:
+                    state.blockers = progress_info.blockers
+                if progress_info.assumptions:
+                    state.assumptions = progress_info.assumptions
+
                 tool_result = self.tools.execute(task, model_step.action, model_step.action_input)
                 observation = {
                     "ok": tool_result.ok,

@@ -25,6 +25,9 @@ class AgentRuntimeState:
     steps: list[StepRecord] = field(default_factory=list)
     answer: AnswerTable | None = None
     failure_reason: str | None = None
+    current_plan: list[str] = field(default_factory=list)
+    blockers: list[str] = field(default_factory=list)
+    assumptions: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True, slots=True)

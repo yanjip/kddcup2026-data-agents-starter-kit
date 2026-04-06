@@ -1,0 +1,1 @@
+uv run dabench run-task task_86 --config configs/react_baseline.example.yaml --agent-type orchestrator

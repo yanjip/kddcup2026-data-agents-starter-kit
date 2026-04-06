@@ -11,6 +11,7 @@ from data_agent_baseline.tools.filesystem import (
     read_json_preview,
     resolve_context_path,
 )
+from data_agent_baseline.tools.math_calc import calculate as math_calculate
 from data_agent_baseline.tools.python_exec import execute_python_code
 from data_agent_baseline.tools.sqlite import execute_read_only_sql, inspect_sqlite_schema
 
@@ -80,6 +81,11 @@ def _execute_python(task: PublicTask, action_input: dict[str, Any]) -> ToolExecu
     return ToolExecutionResult(ok=bool(content.get("success")), content=content)
 
 
+def _calculate_math(task: PublicTask, action_input: dict[str, Any]) -> ToolExecutionResult:
+    expression = str(action_input["expression"])
+    return ToolExecutionResult(ok=True, content=math_calculate(expression))
+
+
 def _answer(_: PublicTask, action_input: dict[str, Any]) -> ToolExecutionResult:
     columns = action_input.get("columns")
     rows = action_input.get("rows")
@@ -138,6 +144,11 @@ def create_default_tool_registry() -> ToolRegistry:
                 "rows": [["value_1"]],
             },
         ),
+        "calculate_math": ToolSpec(
+            name="calculate_math",
+            description="Evaluate simple mathematical expressions (add, subtract, multiply, divide, modulo, power). Use for arithmetic calculations instead of writing code.",
+            input_schema={"expression": "2 + 3 * 4"},
+        ),
         "execute_context_sql": ToolSpec(
             name="execute_context_sql",
             description="Run a read-only SQL query against a sqlite/db file inside context.",
@@ -182,6 +193,7 @@ def create_default_tool_registry() -> ToolRegistry:
     }
     handlers = {
         "answer": _answer,
+        "calculate_math": _calculate_math,
         "execute_context_sql": _execute_context_sql,
         "execute_python": _execute_python,
         "inspect_sqlite_schema": _inspect_sqlite_schema,
