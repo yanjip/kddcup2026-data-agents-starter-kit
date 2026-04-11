@@ -33,6 +33,9 @@ dev = [
 [project.scripts]
 dabench = "data_agent_baseline.cli:main"
 
+[tool.hatch.build.targets.wheel]
+packages = ["src/data_agent_baseline"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py310"

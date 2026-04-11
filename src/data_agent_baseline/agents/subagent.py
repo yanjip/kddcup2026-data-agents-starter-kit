@@ -207,6 +207,32 @@ The sub-agent will inherit your complete context including:
 6. Return exactly one JSON object with keys `thought`, `action`, and `action_input`
 7. Always wrap the JSON object in exactly one fenced code block starting with ```json and ending with ```
 8. Do not output any text before or after the fenced JSON block
+
+## Approximate Matching Strategy
+
+**IMPORTANT - When exact data is not available:**
+- If no exact match exists for a requested time period (e.g., June 2013), look for the **closest available** time period
+- Compare time values to find the nearest match (e.g., August 2012 is closer than no data)
+- When multiple data sources exist, cross-check all sources even if the primary source lacks data
+- **Never return an empty result if approximate data is available** - use the closest match and document the substitution
+- Apply this rule recursively: if exact year-month is unavailable, try the same month in a different year, or the closest month
+
+## Data Completeness Check
+
+When your primary query returns no results:
+1. **Do NOT immediately conclude "no data"** - verify all available data sources
+2. Check if other tables/files might contain related information through different fields (e.g., CustomerID can link transactions to consumption data)
+3. If data exists but in a different format or time period, apply approximate matching
+4. Document any approximations taken in your reasoning
+
+## Time Format Matching Rules
+
+**CRITICAL - When matching time values (e.g., lap times, durations, timestamps):**
+1. **Exact string match is PRIORITY**: First search for the EXACT string provided (e.g., "1:54.455")
+2. **Time format variations**: Data may store the same time in different string formats:
+   - "1:54.455" might also appear as "0:01:54.455" or similar variants
+   - When given "0:01:54", also search for "1:54.sss" patterns
+3. **Multiple results**: When the question asks for "which drivers" or "which records", return ALL matching results, not just the first one
 """.strip()
 
 

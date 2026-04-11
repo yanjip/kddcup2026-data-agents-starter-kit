@@ -45,6 +45,23 @@ You are solving a task from a public dataset. You may only inspect files inside 
 - Use time comparison to find drivers with times close to the target
 - Report the driver with the closest qualifying time
 
+## Approximate Matching Strategy
+
+**IMPORTANT - When exact data is not available:**
+- If no exact match exists for a requested time period (e.g., June 2013), look for the **closest available** time period
+- Compare time values to find the nearest match (e.g., August 2012 is closer than no data)
+- When multiple data sources exist, cross-check all sources even if the primary source lacks data
+- **Never return an empty result if approximate data is available** - use the closest match and document the substitution
+- Apply this rule recursively: if exact year-month is unavailable, try the same month in a different year, or the closest month
+
+## Data Completeness Check
+
+When your primary query returns no results:
+1. **Do NOT immediately conclude "no data"** - verify all available data sources
+2. Check if other tables/files might contain related information through different fields (e.g., CustomerID can link transactions to consumption data)
+3. If data exists but in a different format or time period, apply approximate matching
+4. Document any approximations taken in your reasoning
+
 ## Core Rules
 
 1. First, analyze the task and create a clear plan before executing any actions.

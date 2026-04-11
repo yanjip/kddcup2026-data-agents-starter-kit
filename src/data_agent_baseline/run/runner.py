@@ -119,7 +119,7 @@ def _run_single_task_core(
     config: AppConfig,
     model=None,
     tools: ToolRegistry | None = None,
-    agent_type: str = "react",
+    agent_type: str = "orchestrator",
 ) -> dict[str, Any]:
     public_dataset = DABenchPublicDataset(config.dataset.root_path)
     task = public_dataset.get_task(task_id)
@@ -159,10 +159,10 @@ def _run_single_task_in_subprocess(task_id: str, config: AppConfig, queue: multi
         )
 
 
-def _run_single_task_with_timeout(*, task_id: str, config: AppConfig) -> dict[str, Any]:
+def _run_single_task_with_timeout(*, task_id: str, config: AppConfig, agent_type: str = "orchestrator") -> dict[str, Any]:
     timeout_seconds = config.run.task_timeout_seconds
     if timeout_seconds <= 0:
-        return _run_single_task_core(task_id=task_id, config=config)
+        return _run_single_task_core(task_id=task_id, config=config, agent_type=agent_type)
 
     queue: multiprocessing.Queue[Any] = multiprocessing.Queue()
     process = multiprocessing.Process(
@@ -228,7 +228,7 @@ def run_single_task(
     run_output_dir: Path,
     model=None,
     tools: ToolRegistry | None = None,
-    agent_type: str = "react",
+    agent_type: str = "orchestrator",
 ) -> TaskRunArtifacts:
     started_at = perf_counter()
     if model is None and tools is None:
