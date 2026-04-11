@@ -52,6 +52,7 @@ class OpenAIModelAdapter:
             response = client.chat.completions.create(
                 model=self.model,
                 messages=[{"role": message.role, "content": message.content} for message in messages],
+                extra_body={"enable_thinking": True},
                 temperature=self.temperature
             )
         except APIError as exc:

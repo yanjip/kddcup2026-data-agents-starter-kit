@@ -335,6 +335,7 @@ def main():
 示例:
   python evaluate.py --gold-dir public/output --prediction-dir artifacts/runs/example_run_id
   python evaluate.py --gold-dir public/output --prediction-dir artifacts/runs/example_run_id --lambda 0.2
+  uv run python evaluate.py --gold-dir demo_samples/output --prediction-dir artifacts/runs/aliyun_run_id_14
         """
     )
     
