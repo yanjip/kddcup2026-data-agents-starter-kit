@@ -267,30 +267,43 @@ def evaluate_run(
 
 def print_results(results: dict):
     """打印评分结果"""
-    print("=" * 80)
-    print(f"评分结果 - Run ID: {results['run_id']}")
-    print("=" * 80)
-    print(f"\n总体统计:")
-    print(f"  - 总任务数: {results['task_count']}")
-    print(f"  - 成功任务数: {results['succeeded_task_count']}")
-    print(f"  - 已评分任务数: {results['scored_tasks']}")
-    print(f"  - 惩罚项权重 λ: {results['lambda_penalty']}")
-    print(f"  - 总分: {results['total_score']:.4f}")
-    print(f"  - 平均分: {results['average_score']:.4f}")
+    print(get_results_text(results))
+
+def save_results_txt(results: dict, output_path: str):
+    """保存评分结果到TXT文件"""
+    with open(output_path, 'w', encoding='utf-8') as f:
+        f.write(get_results_text(results))
+    print(f"\n评分结果已保存到: {output_path}")
+
+def get_results_text(results: dict) -> str:
+    """生成评分结果的文本格式"""
+    text = []
+    text.append("=" * 80)
+    text.append(f"评分结果 - Run ID: {results['run_id']}")
+    text.append("=" * 80)
+    text.append(f"\n总体统计:")
+    text.append(f"  - 总任务数: {results['task_count']}")
+    text.append(f"  - 成功任务数: {results['succeeded_task_count']}")
+    text.append(f"  - 已评分任务数: {results['scored_tasks']}")
+    text.append(f"  - 惩罚项权重 λ: {results['lambda_penalty']}")
+    text.append(f"  - 总分: {results['total_score']:.4f}")
+    text.append(f"  - 平均分: {results['average_score']:.4f}")
     
-    print(f"\n{'=' * 80}")
-    print("各任务详细评分:")
-    print(f"{'=' * 80}")
-    print(f"{'Task ID':<15} {'Gold':>6} {'Pred':>6} {'Match':>6} {'Extra':>6} {'Recall':>8} {'Penalty':>8} {'Score':>8} {'Status':<20}")
-    print("-" * 100)
+    text.append(f"\n{'=' * 80}")
+    text.append("各任务详细评分:")
+    text.append(f"{'=' * 80}")
+    text.append(f"{'Task ID':<15} {'Gold':>6} {'Pred':>6} {'Match':>6} {'Extra':>6} {'Recall':>8} {'Penalty':>8} {'Score':>8} {'Status':<20}")
+    text.append("-" * 100)
     
     for task in results['task_scores']:
         status = "✓" if task.succeeded else f"✗ ({task.failure_reason[:15]}...)" if task.failure_reason else "✗"
-        print(f"{task.task_id:<15} {task.gold_columns:>6} {task.predicted_columns:>6} "
-              f"{task.matched_columns:>6} {task.extra_columns:>6} "
-              f"{task.recall:>8.4f} {task.penalty:>8.4f} {task.score:>8.4f} {status:<20}")
+        text.append(f"{task.task_id:<15} {task.gold_columns:>6} {task.predicted_columns:>6} "
+                    f"{task.matched_columns:>6} {task.extra_columns:>6} "
+                    f"{task.recall:>8.4f} {task.penalty:>8.4f} {task.score:>8.4f} {status:<20}")
     
-    print("=" * 100)
+    text.append("=" * 100)
+    
+    return '\n'.join(text)
 
 
 def save_results(results: dict, output_path: str):
@@ -364,7 +377,7 @@ def main():
     parser.add_argument(
         '--output',
         type=str,
-        default=None,
+        default="score",
         help='输出结果保存路径 (JSON 格式)'
     )
     
@@ -400,7 +413,20 @@ def main():
     
     # 保存结果
     if args.output:
-        save_results(results, args.output)
+        # 如果output是目录，则使用run_id作为文件名
+        output_path = Path(args.output)
+        if output_path.is_dir():
+            run_id = results['run_id']
+            output_file = output_path / f"{run_id}_results.json"
+            save_results(results, str(output_file))
+            # 保存txt格式结果
+            txt_output_file = output_path / f"{run_id}_results.txt"
+            save_results_txt(results, str(txt_output_file))
+        else:
+            save_results(results, args.output)
+            # 保存txt格式结果
+            txt_output_path = Path(args.output).with_suffix('.txt')
+            save_results_txt(results, str(txt_output_path))
     
     return 0
 
