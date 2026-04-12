@@ -7,9 +7,7 @@ from typing import Any
 
 from data_agent_baseline.agents.model import ModelAdapter, ModelMessage, ModelStep
 from data_agent_baseline.agents.prompt import (
-    REACT_SYSTEM_PROMPT,
     build_observation_prompt,
-    build_system_prompt,
     build_task_prompt,
 )
 from data_agent_baseline.agents.runtime import AgentRuntimeState, StepRecord
@@ -55,7 +53,9 @@ def parse_model_step(raw_response: str) -> ModelStep:
     action_input = payload.get("action_input", {})
     if not isinstance(thought, str):
         raise ValueError("thought must be a string.")
-    if not isinstance(action, str) or not action:
+    if action is None:
+        raise ValueError("Model response must contain an 'action' key.")
+    if not isinstance(action, str) or not action.strip():
         raise ValueError("action must be a non-empty string.")
     if not isinstance(action_input, dict):
         raise ValueError("action_input must be a JSON object.")
@@ -99,10 +99,14 @@ class SubAgent:
         self.state = AgentRuntimeState()
 
         for step_index in range(1, self.config.max_steps + 1):
-            raw_response = self.model.complete(self.inherited_messages + [ModelMessage(role="user", content=build_task_prompt(task))])
+            # Build messages with current state
+            messages = self.inherited_messages.copy()
+            messages.append(ModelMessage(role="user", content=build_task_prompt(task)))
             for step in self.state.steps:
-                self.inherited_messages.append(ModelMessage(role="assistant", content=step.raw_response))
-                self.inherited_messages.append(ModelMessage(role="user", content=build_observation_prompt(step.observation)))
+                messages.append(ModelMessage(role="assistant", content=step.raw_response))
+                messages.append(ModelMessage(role="user", content=build_observation_prompt(step.observation)))
+            
+            raw_response = self.model.complete(messages)
 
             try:
                 model_step = parse_model_step(raw_response)
@@ -123,6 +127,8 @@ class SubAgent:
                     ok=tool_result.ok,
                 )
                 self.state.steps.append(step_record)
+                if not tool_result.ok:
+                    self.state.failure_reason = tool_result.content.get("error", "Tool execution failed")
 
                 if tool_result.is_terminal:
                     self.state.answer = tool_result.answer
@@ -156,12 +162,13 @@ class SubAgent:
                     error=str(exc),
                 )
 
+        self.state.failure_reason = f"SubAgent did not complete within max_steps ({self.config.max_steps})."
         return ForkResult(
             subagent_name=self.name,
             success=False,
             result=None,
             steps=list(self.state.steps),
-            error="SubAgent did not complete within max_steps.",
+            error=self.state.failure_reason,
         )
 
 
@@ -180,6 +187,8 @@ You are the Orchestrator Agent responsible for coordinating complex data analysi
 2. **Planning**: Create a clear execution plan with independent work streams that can run in parallel
 3. **Delegation**: Fork sub-agents to handle specific sub-tasks when appropriate
 4. **Synthesis**: Combine results from sub-agents to produce the final answer
+5. **Validation**: Verify results against expected ranges and data schema
+6. **Error Handling**: Detect and resolve discrepancies between predictions and expected results
 
 ## Fork Mechanism
 
@@ -193,6 +202,16 @@ The sub-agent will inherit your complete context including:
 - Full conversation history
 - All tool registrations
 
+## Output Formatting Rules
+1. **Preserve Individual Fields**: When asked for "full name" or similar combined attributes, always return the individual components (e.g., first_name and last_name) as separate columns in your final output.
+2. **Multi-Column Output**: For tasks involving multiple attributes or dimensions, return results with distinct columns for each attribute rather than combining them into a single column.
+3. **Structured Results**: Use the `answer` tool with appropriate column names that match the data schema (e.g., `["first_name", "last_name"]` instead of `["full_name"]`).
+4. **Clarity**: If a task asks for "full name", you may include both the combined full name and individual components if it adds value, but prioritize returning the individual fields as separate columns.
+5. **Minimal Output**: Only return the columns explicitly requested in the task. Do not include intermediate columns or additional information unless specifically asked for. If the task asks for a ratio or calculated value, return only that final result column.
+6. **Column Name Mapping**: Use the column names specified in the task or data schema.
+7. **Strict Focus**: Even if you need intermediate columns for calculations, do not include them in the final answer. Only include the exact columns requested in the task description.
+8. **Precision**: When returning numerical results, maintain full precision without rounding unless explicitly instructed otherwise.
+
 ## Core Rules
 
 1. First, analyze the task and create a clear plan before executing any actions
@@ -202,12 +221,20 @@ The sub-agent will inherit your complete context including:
    - Parallel hypothesis testing
    - Multiple independent queries
    - Complex transformations that can be split
+   - Cross-validation of results
 4. Maximum 3 sub-agents can be active at once
 5. Always call the `answer` tool when you have the final result
 6. Return exactly one JSON object with keys `thought`, `action`, and `action_input`
 7. Always wrap the JSON object in exactly one fenced code block starting with ```json and ending with ```
 8. Do not output any text before or after the fenced JSON block
+9. When returning numerical results in the `answer` tool, use the full precision of the calculated value without rounding or formatting. Do not wrap numbers in quotes.
+10. **Ambiguity Resolution**: When task descriptions are ambiguous, consider multiple interpretations and either:
+    - Ask for clarification
+    - Provide multiple possible results with explanations
+11. **Result Validation**: Always validate results against expected ranges and business logic
+12. **Error Detection**: Flag unexpected results and investigate potential causes
 """.strip()
+
 
 
 ORCHESTRATOR_RESPONSE_EXAMPLES = """
@@ -221,17 +248,21 @@ Example response when handling fork result:
 {"thought":"Sub-agent 'explorer1' completed successfully. Got schema for customers table.\\nPlan: 1. ✓ Schema exploration\\n2. Query customers table\\n3. Join with orders\\nBlocker: None\\nAssumption: None\\n\\nNow I have the schema, I'll proceed with querying.","action":"read_doc","action_input":{"path":"context/customers.csv"}}
 ```
 
-Example response for final answer:
+Example response for final answer with validation:
 ```json
-{"thought":"Plan: 1. ✓ Explored data\\n2. ✓ Queried tables\\n3. ✓ Combined results\\nBlocker: None\\nAssumption: Verified\\n\\nI have the final result table.","action":"answer","action_input":{"columns":["department","avg_salary"],"rows":[["Engineering","95000"],["Sales","72000"]]}}
+{"thought":"Plan: 1. ✓ Explored data\n2. ✓ Queried tables\n3. ✓ Combined results\n4. ✓ Validated results against expected range\nBlocker: None\nAssumption: Verified\n\nI have the final result table with validated results.","action":"answer","action_input":{"columns":["department","avg_salary"],"rows":[["Engineering",95000],["Sales",72000]]}}
+```
+
+Example response for ambiguous task:
+```json
+{"thought":"Task is ambiguous. 'Average monthly consumption' can be interpreted in multiple ways:\n1. Total monthly consumption across all customers\n2. Average consumption per customer per month\n3. Average consumption per transaction per month\n\nI'll provide both interpretations.","action":"execute_python","action_input":{"code":"# Calculate both interpretations\ntotal_monthly = total_consumption / 12\navg_per_customer = total_monthly / customer_count\nprint(f\"Total monthly: {total_monthly}\")\nprint(f\"Average per customer: {avg_per_customer}\")"}}
 ```
 """.strip()
 
-
 @dataclass(frozen=True, slots=True)
 class OrchestratorAgentConfig:
-    max_main_steps: int = 8
-    max_subagents: int = 3
+    max_main_steps: int = 12
+    max_subagents: int = 6
 
 
 class OrchestratorAgent:
