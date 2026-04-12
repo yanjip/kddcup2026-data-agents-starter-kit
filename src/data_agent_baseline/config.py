@@ -29,6 +29,10 @@ class AgentConfig:
     api_key: str = ""
     max_steps: int = 16
     temperature: float = 0.0
+    # Orchestrator agent specific config
+    max_main_steps: int = 10
+    max_subagent_steps: int = 12
+    max_subagents: int = 6
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,6 +78,9 @@ def load_app_config(config_path: Path) -> AppConfig:
         api_key=str(os.environ.get("MODEL_API_KEY", agent_payload.get("api_key", agent_defaults.api_key))),
         max_steps=int(agent_payload.get("max_steps", agent_defaults.max_steps)),
         temperature=float(agent_payload.get("temperature", agent_defaults.temperature)),
+        max_main_steps=int(agent_payload.get("max_main_steps", agent_defaults.max_main_steps)),
+        max_subagent_steps=int(agent_payload.get("max_subagent_steps", agent_defaults.max_subagent_steps)),
+        max_subagents=int(agent_payload.get("max_subagents", agent_defaults.max_subagents)),
     )
     raw_run_id = run_payload.get("run_id")
     run_id = run_defaults.run_id

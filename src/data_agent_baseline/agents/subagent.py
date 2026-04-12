@@ -210,7 +210,6 @@ The sub-agent will inherit your complete context including:
 5. **Minimal Output**: Only return the columns explicitly requested in the task. Do not include intermediate columns or additional information unless specifically asked for. If the task asks for a ratio or calculated value, return only that final result column.
 6. **Column Name Mapping**: Use the column names specified in the task or data schema.
 7. **Strict Focus**: Even if you need intermediate columns for calculations, do not include them in the final answer. Only include the exact columns requested in the task description.
-8. **Precision**: When returning numerical results, maintain full precision without rounding unless explicitly instructed otherwise.
 
 ## Core Rules
 
@@ -228,11 +227,6 @@ The sub-agent will inherit your complete context including:
 7. Always wrap the JSON object in exactly one fenced code block starting with ```json and ending with ```
 8. Do not output any text before or after the fenced JSON block
 9. When returning numerical results in the `answer` tool, use the full precision of the calculated value without rounding or formatting. Do not wrap numbers in quotes.
-10. **Ambiguity Resolution**: When task descriptions are ambiguous, consider multiple interpretations and either:
-    - Ask for clarification
-    - Provide multiple possible results with explanations
-11. **Result Validation**: Always validate results against expected ranges and business logic
-12. **Error Detection**: Flag unexpected results and investigate potential causes
 """.strip()
 
 
@@ -248,21 +242,17 @@ Example response when handling fork result:
 {"thought":"Sub-agent 'explorer1' completed successfully. Got schema for customers table.\\nPlan: 1. ✓ Schema exploration\\n2. Query customers table\\n3. Join with orders\\nBlocker: None\\nAssumption: None\\n\\nNow I have the schema, I'll proceed with querying.","action":"read_doc","action_input":{"path":"context/customers.csv"}}
 ```
 
-Example response for final answer with validation:
+Example response for final answer:
 ```json
-{"thought":"Plan: 1. ✓ Explored data\n2. ✓ Queried tables\n3. ✓ Combined results\n4. ✓ Validated results against expected range\nBlocker: None\nAssumption: Verified\n\nI have the final result table with validated results.","action":"answer","action_input":{"columns":["department","avg_salary"],"rows":[["Engineering",95000],["Sales",72000]]}}
-```
-
-Example response for ambiguous task:
-```json
-{"thought":"Task is ambiguous. 'Average monthly consumption' can be interpreted in multiple ways:\n1. Total monthly consumption across all customers\n2. Average consumption per customer per month\n3. Average consumption per transaction per month\n\nI'll provide both interpretations.","action":"execute_python","action_input":{"code":"# Calculate both interpretations\ntotal_monthly = total_consumption / 12\navg_per_customer = total_monthly / customer_count\nprint(f\"Total monthly: {total_monthly}\")\nprint(f\"Average per customer: {avg_per_customer}\")"}}
+{"thought":"Plan: 1. ✓ Explored data\n2. ✓ Queried tables\n3. ✓ Combined results\nBlocker: None\nAssumption: Verified\n\nI have the final result table.","action":"answer","action_input":{"columns":["department","avg_salary"],"rows":[["Engineering",95000],["Sales",72000]]}}
 ```
 """.strip()
 
 @dataclass(frozen=True, slots=True)
 class OrchestratorAgentConfig:
-    max_main_steps: int = 12
-    max_subagents: int = 6
+    max_main_steps: int
+    max_subagent_steps: int
+    max_subagents: int
 
 
 class OrchestratorAgent:
@@ -271,11 +261,11 @@ class OrchestratorAgent:
         *,
         model: ModelAdapter,
         tools: ToolRegistry,
-        config: OrchestratorAgentConfig | None = None,
+        config: OrchestratorAgentConfig,
     ) -> None:
         self.model = model
         self.tools = tools
-        self.config = config or OrchestratorAgentConfig()
+        self.config = config
         self._subagents: list[SubAgent] = []
         self._state = OrchestratorRuntimeState()
 
@@ -331,7 +321,7 @@ class OrchestratorAgent:
             name=subagent_name,
             model=self.model,
             tools=self.tools,
-            config=SubAgentConfig(max_steps=12, name=subagent_name),
+            config=SubAgentConfig(max_steps=self.config.max_subagent_steps, name=subagent_name),
             inherited_messages=inherited_messages,
         )
         self._subagents.append(subagent)

@@ -13,7 +13,6 @@ from time import perf_counter
 from typing import Any
 
 from data_agent_baseline.agents.model import OpenAIModelAdapter
-from data_agent_baseline.agents.react import ReActAgent, ReActAgentConfig
 from data_agent_baseline.agents.subagent import OrchestratorAgent, OrchestratorAgentConfig
 from data_agent_baseline.benchmark.dataset import DABenchPublicDataset
 from data_agent_baseline.config import AppConfig
@@ -119,27 +118,21 @@ def _run_single_task_core(
     config: AppConfig,
     model=None,
     tools: ToolRegistry | None = None,
-    agent_type: str = "orchestrator",
 ) -> dict[str, Any]:
     public_dataset = DABenchPublicDataset(config.dataset.root_path)
     task = public_dataset.get_task(task_id)
 
-    if agent_type == "orchestrator":
-        agent = OrchestratorAgent(
-            model=model or build_model_adapter(config),
-            tools=tools or create_default_tool_registry(),
-            config=OrchestratorAgentConfig(max_main_steps=config.agent.max_steps),
-        )
-        run_result = agent.run(task)
-        return run_result.to_dict()
-    else:
-        agent = ReActAgent(
-            model=model or build_model_adapter(config),
-            tools=tools or create_default_tool_registry(),
-            config=ReActAgentConfig(max_steps=config.agent.max_steps),
-        )
-        run_result = agent.run(task)
-        return run_result.to_dict()
+    agent = OrchestratorAgent(
+        model=model or build_model_adapter(config),
+        tools=tools or create_default_tool_registry(),
+        config=OrchestratorAgentConfig(
+            max_main_steps=config.agent.max_main_steps,
+            max_subagent_steps=config.agent.max_subagent_steps,
+            max_subagents=config.agent.max_subagents,
+        ),
+    )
+    run_result = agent.run(task)
+    return run_result.to_dict()
 
 
 def _run_single_task_in_subprocess(task_id: str, config: AppConfig, queue: multiprocessing.Queue[Any]) -> None:
@@ -159,10 +152,10 @@ def _run_single_task_in_subprocess(task_id: str, config: AppConfig, queue: multi
         )
 
 
-def _run_single_task_with_timeout(*, task_id: str, config: AppConfig, agent_type: str = "orchestrator") -> dict[str, Any]:
+def _run_single_task_with_timeout(*, task_id: str, config: AppConfig) -> dict[str, Any]:
     timeout_seconds = config.run.task_timeout_seconds
     if timeout_seconds <= 0:
-        return _run_single_task_core(task_id=task_id, config=config, agent_type=agent_type)
+        return _run_single_task_core(task_id=task_id, config=config)
 
     queue: multiprocessing.Queue[Any] = multiprocessing.Queue()
     process = multiprocessing.Process(
@@ -228,13 +221,12 @@ def run_single_task(
     run_output_dir: Path,
     model=None,
     tools: ToolRegistry | None = None,
-    agent_type: str = "orchestrator",
 ) -> TaskRunArtifacts:
     started_at = perf_counter()
     if model is None and tools is None:
         run_result = _run_single_task_with_timeout(task_id=task_id, config=config)
     else:
-        run_result = _run_single_task_core(task_id=task_id, config=config, model=model, tools=tools, agent_type=agent_type)
+        run_result = _run_single_task_core(task_id=task_id, config=config, model=model, tools=tools)
     run_result["e2e_elapsed_seconds"] = round(perf_counter() - started_at, 3)
     return _write_task_outputs(task_id, run_output_dir, run_result)
 
@@ -246,7 +238,6 @@ def run_benchmark(
     tools: ToolRegistry | None = None,
     limit: int | None = None,
     progress_callback: Callable[[TaskRunArtifacts], None] | None = None,
-    agent_type: str = "react",
 ) -> tuple[Path, list[TaskRunArtifacts]]:
     effective_run_id, run_output_dir = create_run_output_dir(config.run.output_dir, run_id=config.run.run_id)
 
@@ -275,7 +266,6 @@ def run_benchmark(
                 run_output_dir=run_output_dir,
                 model=shared_model,
                 tools=shared_tools,
-                agent_type=agent_type,
             )
             task_artifacts.append(artifact)
             if progress_callback is not None:
@@ -288,7 +278,6 @@ def run_benchmark(
                     task_id=task_id,
                     config=config,
                     run_output_dir=run_output_dir,
-                    agent_type=agent_type,
                 ): index
                 for index, task_id in enumerate(task_ids)
             }

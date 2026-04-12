@@ -134,7 +134,6 @@ def inspect_task(
 def run_task_command(
     task_id: str,
     config: Path = typer.Option(..., exists=True, dir_okay=False, help="YAML config path."),
-    agent_type: str = typer.Option("orchestrator", help="Agent type: 'react' or 'orchestrator'."),
 ) -> None:
     """Run the ReAct baseline on one task."""
     app_config = load_app_config(config)
@@ -142,7 +141,7 @@ def run_task_command(
         _, run_output_dir = create_run_output_dir(app_config.run.output_dir, run_id=app_config.run.run_id)
     except (ValueError, FileExistsError) as exc:
         raise typer.BadParameter(str(exc), param_hint="run.run_id") from exc
-    artifacts = run_single_task(task_id=task_id, config=app_config, run_output_dir=run_output_dir, agent_type=agent_type)
+    artifacts = run_single_task(task_id=task_id, config=app_config, run_output_dir=run_output_dir)
 
     console.print(f"Run output: {run_output_dir}")
     console.print(f"Task output: {artifacts.task_output_dir}")
@@ -158,7 +157,6 @@ def run_task_command(
 def run_benchmark_command(
     config: Path = typer.Option(..., exists=True, dir_okay=False, help="YAML config path."),
     limit: int | None = typer.Option(None, min=1, help="Maximum number of tasks to run."),
-    agent_type: str = typer.Option("react", help="Agent type: 'react' or 'orchestrator'."),
 ) -> None:
     """Run the ReAct baseline on multiple tasks from the config selection."""
     app_config = load_app_config(config)
@@ -236,7 +234,6 @@ def run_benchmark_command(
                 config=app_config,
                 limit=limit,
                 progress_callback=on_task_complete,
-                agent_type=agent_type,
             )
         except (ValueError, FileExistsError) as exc:
             raise typer.BadParameter(str(exc), param_hint="run.run_id") from exc
