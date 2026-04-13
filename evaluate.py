@@ -12,6 +12,7 @@ import os
 import json
 import csv
 import argparse
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 from dataclasses import dataclass
@@ -302,6 +303,7 @@ def get_results_text(results: dict) -> str:
                     f"{task.recall:>8.4f} {task.penalty:>8.4f} {task.score:>8.4f} {status:<20}")
     
     text.append("=" * 100)
+    text.append(f"Generated at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     
     return '\n'.join(text)
 

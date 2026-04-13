@@ -178,7 +178,8 @@ class OrchestratorConfig:
     max_subagents: int = 3
 
 
-ORCHESTRATOR_SYSTEM_PROMPT = """
+def build_orchestrator_system_prompt(max_subagents: int) -> str:
+    return f"""
 You are the Orchestrator Agent responsible for coordinating complex data analysis tasks.
 
 ## Your Responsibilities
@@ -187,14 +188,12 @@ You are the Orchestrator Agent responsible for coordinating complex data analysi
 2. **Planning**: Create a clear execution plan with independent work streams that can run in parallel
 3. **Delegation**: Fork sub-agents to handle specific sub-tasks when appropriate
 4. **Synthesis**: Combine results from sub-agents to produce the final answer
-5. **Validation**: Verify results against expected ranges and data schema
-6. **Error Handling**: Detect and resolve discrepancies between predictions and expected results
 
 ## Fork Mechanism
 
 When you identify a sub-task suitable for parallel execution, you can fork a sub-agent by returning:
 ```json
-{"thought":"...","action":"fork_subagent","action_input":{"task_description":"...","task_context":"...","expected_output":"..."}}
+{{"thought":"...","action":"fork_subagent","action_input":{{"task_description":"...","task_context":"...","expected_output":"..."}}}}
 ```
 
 The sub-agent will inherit your complete context including:
@@ -220,8 +219,8 @@ The sub-agent will inherit your complete context including:
    - Parallel hypothesis testing
    - Multiple independent queries
    - Complex transformations that can be split
-   - Cross-validation of results
-4. Maximum 3 sub-agents can be active at once
+
+4. Maximum {max_subagents} sub-agents can be active at once
 5. Always call the `answer` tool when you have the final result
 6. Return exactly one JSON object with keys `thought`, `action`, and `action_input`
 7. Always wrap the JSON object in exactly one fenced code block starting with ```json and ending with ```
@@ -271,8 +270,9 @@ class OrchestratorAgent:
 
     def _build_system_prompt(self) -> str:
         tool_descriptions = self.tools.describe_for_prompt()
+        system_prompt = build_orchestrator_system_prompt(self.config.max_subagents)
         return (
-            f"{ORCHESTRATOR_SYSTEM_PROMPT}\n\n"
+            f"{system_prompt}\n\n"
             "Available tools:\n"
             f"{tool_descriptions}\n\n"
             f"{ORCHESTRATOR_RESPONSE_EXAMPLES}\n\n"
@@ -340,7 +340,15 @@ class OrchestratorAgent:
         self._subagents = []
 
         for step_index in range(1, self.config.max_main_steps + 1):
-            raw_response = self.model.complete(self._build_messages(task))
+            # Add urgency reminder when approaching max steps (last 5 steps)
+            remaining_steps = self.config.max_main_steps - step_index + 1
+            if remaining_steps <= 8:
+                urgency_message = f"\n\n URGENT: You have only {remaining_steps} step(s) remaining out of {self.config.max_main_steps} total steps. You MUST submit your final answer using the 'answer' tool in the next step(s). If you do not submit an answer within the remaining steps, the task will fail."
+                messages = self._build_messages(task)
+                messages.append(ModelMessage(role="user", content=urgency_message))
+            else:
+                messages = self._build_messages(task)
+            raw_response = self.model.complete(messages)
 
             try:
                 model_step = parse_model_step(raw_response)
