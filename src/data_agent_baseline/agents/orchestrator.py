@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import logging
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -13,6 +15,7 @@ from data_agent_baseline.agents.prompt import (
 )
 from data_agent_baseline.agents.runtime import StepRecord
 from data_agent_baseline.agents.subagent import ForkRequest, ForkResult, SubAgent, SubAgentConfig
+from data_agent_baseline.tools.registry import create_default_tool_registry
 from data_agent_baseline.agents.verification_agent import (
     VerificationAgent,
     VerificationAgentConfig,
@@ -21,6 +24,8 @@ from data_agent_baseline.agents.verification_agent import (
 )
 from data_agent_baseline.benchmark.schema import AnswerTable, PublicTask
 from data_agent_baseline.tools.registry import ToolRegistry
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,6 +39,7 @@ class OrchestratorAgentConfig:
     max_main_steps: int
     max_subagent_steps: int
     max_subagents: int
+    enable_verification: bool = False  # 是否启用验证 Agent
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,7 +73,8 @@ class OrchestratorRuntimeState:
     steps: list[OrchestratorStepRecord] | None = None
     answer: AnswerTable | None = None
     failure_reason: str | None = None
-    verification_done: bool = False  # 标记是否已完成验证
+    verification_done: bool = False  # 标记是否已完成验证（保留用于兼容性）
+    verification_attempt_count: int = 0  # 验证尝试次数（替代 verification_done）
     verification_result: VerificationResult | None = None  # 验证结果
 
     def __post_init__(self) -> None:
@@ -105,15 +112,16 @@ class OrchestratorAgent:
         model: ModelAdapter,
         tools: ToolRegistry,
         config: OrchestratorAgentConfig,
-        enable_verification: bool = True,  # 是否启用验证
     ) -> None:
         self.model = model
         self.tools = tools
         self.config = config
-        self._enable_verification = enable_verification
+        self._enable_verification = config.enable_verification
         self._subagents: list[SubAgent] = []
         self._state = OrchestratorRuntimeState()
         self._verifier: VerificationAgent | None = None
+        self._pending_subagent_requests: list[ForkRequest] = []  # 待执行的 subagent 请求
+        self._subagent_results: dict[str, ForkResult] = {}  # subagent 执行结果
 
     def _build_system_prompt(self, task: PublicTask) -> str:
         tool_descriptions = self.tools.describe_for_prompt()
@@ -151,43 +159,101 @@ class OrchestratorAgent:
 
         return messages
 
-    def _fork_subagent(self, task: PublicTask, task_description: str, task_context: str, expected_output: str) -> ForkResult:
-        if len(self._subagents) >= self.config.max_subagents:
-            return ForkResult(
-                subagent_name="",
-                success=False,
-                result=None,
-                steps=[],
-                error=f"Maximum number of subagents ({self.config.max_subagents}) reached.",
-            )
-
-        subagent_name = f"subagent_{len(self._subagents) + 1}"
+    async def _create_subagent(self, task: PublicTask, fork_request: ForkRequest, subagent_name: str) -> ForkResult:
+        """创建并运行单个 subagent（异步执行）"""
         inherited_messages = self._build_messages(task)
+
+        # SubAgent 不应该能 fork 其他 subagent，创建不包含 fork_subagent 的工具注册表
+        subagent_tools = create_default_tool_registry(include_fork_subagent=False)
 
         subagent = SubAgent(
             name=subagent_name,
             model=self.model,
-            tools=self.tools,
+            tools=subagent_tools,
             config=SubAgentConfig(max_steps=self.config.max_subagent_steps, name=subagent_name),
             inherited_messages=inherited_messages,
         )
         self._subagents.append(subagent)
 
         class SubTask:
-            def __init__(self, desc: str, ctx: str, out: str, task_id: str, context_dir: Path):
+            def __init__(self, desc: str, ctx: str, out: str, task_id: str, context_dir):
                 self.task_id = task_id
                 self.question = f"{desc}\n\nContext: {ctx}\n\nExpected output: {out}"
                 self.context_dir = context_dir
+                self.difficulty = task.difficulty  # 继承原任务难度
 
-        sub_task = SubTask(task_description, task_context, expected_output, f"{task.task_id}_{subagent_name}", task.context_dir)
-        return subagent.run(sub_task)
+        sub_task = SubTask(
+            fork_request.task_description,
+            fork_request.task_context,
+            fork_request.expected_output,
+            f"{task.task_id}_{subagent_name}",
+            task.context_dir
+        )
+        return await subagent.run(sub_task)
 
-    def _verify_answer(
+    async def _execute_pending_subagents_parallel(self, task: PublicTask) -> list[ForkResult]:
+        """并行执行所有待处理的 subagent 请求（使用 asyncio）"""
+        if not self._pending_subagent_requests:
+            return []
+
+        remaining_slots = self.config.max_subagents - len(self._subagents)
+
+        if remaining_slots <= 0:
+            logger.warning("No remaining subagent slots available")
+            return [
+                ForkResult(
+                    subagent_name="",
+                    success=False,
+                    result=None,
+                    steps=[],
+                    error=f"Maximum number of subagents ({self.config.max_subagents}) reached.",
+                )
+                for _ in self._pending_subagent_requests
+            ]
+
+        # 限制并发数量
+        requests_to_process = self._pending_subagent_requests[:remaining_slots]
+        self._pending_subagent_requests = self._pending_subagent_requests[remaining_slots:]
+
+        logger.info(f"Executing {len(requests_to_process)} subagents in parallel")
+
+        # 使用 asyncio.gather 并行执行
+        tasks = []
+        for i, fork_request in enumerate(requests_to_process):
+            subagent_name = f"subagent_{len(self._subagents) + i + 1}"
+            task_coro = self._create_subagent(task, fork_request, subagent_name)
+            tasks.append(task_coro)
+
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # 处理结果
+        processed_results = []
+        for i, result in enumerate(results):
+            subagent_name = f"subagent_{len(self._subagents) - len(results) + i + 1}"
+            if isinstance(result, Exception):
+                logger.error(f"Subagent {subagent_name} failed with exception: {result}")
+                error_result = ForkResult(
+                    subagent_name=subagent_name,
+                    success=False,
+                    result=None,
+                    steps=[],
+                    error=str(result),
+                )
+                processed_results.append(error_result)
+                self._subagent_results[subagent_name] = error_result
+            else:
+                processed_results.append(result)
+                self._subagent_results[subagent_name] = result
+                logger.info(f"Subagent {subagent_name} completed: success={result.success}")
+
+        return processed_results
+
+    async def _verify_answer(
         self, 
         task: PublicTask, 
         proposed_answer: AnswerTable,
         original_thought: str = ""
-    ) -> bool:
+    ) -> VerificationResult | None:
         """
         验证答案
         
@@ -197,7 +263,9 @@ class OrchestratorAgent:
             original_thought: 原始推理过程
             
         Returns:
-            bool: 验证是否通过
+            VerificationResult | None: 
+                - VerificationResult: 验证完成，包含验证结果
+                - None: 验证执行失败（如工具错误等），无法完成验证
         """
         # 初始化验证Agent（如果未初始化）
         if self._verifier is None:
@@ -205,26 +273,38 @@ class OrchestratorAgent:
                 name="verifier",
                 model=self.model,
                 tools=self.tools,
-                config=VerificationAgentConfig(max_steps=6),
+                config=VerificationAgentConfig(max_steps=10)
             )
         
+        # 构建执行历史，帮助验证 Agent 了解主 Agent 的数据源和推理路径
+        execution_history = []
+        for step in self._state.steps:
+            execution_history.append({
+                "step_index": step.step_index,
+                "thought": step.thought,
+                "action": step.action,
+                "action_input": step.action_input,
+                "ok": step.ok,
+            })
+        
         # 执行验证
-        verification_result = self._verifier.run(
+        verification_result = await self._verifier.run(
             task=task,
             proposed_answer=proposed_answer,
-            original_reasoning=original_thought
+            original_reasoning=original_thought,
+            execution_history=execution_history
         )
+        
+        # 如果验证执行失败（返回 None），直接返回 None
+        if verification_result is None:
+            return None
         
         # 保存验证结果
         self._state.verification_result = verification_result
         
-        # 根据置信度和验证结果判断是否通过
-        # 置信度 > 0.7 且验证结果为有效才算通过
-        passed = verification_result.is_valid and verification_result.confidence >= 0.7
-        
-        return passed
+        return verification_result
 
-    def run(self, task: PublicTask) -> OrchestratorRunResult:
+    async def run(self, task: PublicTask) -> OrchestratorRunResult:
         self._state = OrchestratorRuntimeState()
         self._subagents = []
 
@@ -237,7 +317,7 @@ class OrchestratorAgent:
                 messages.append(ModelMessage(role="user", content=urgency_message))
             else:
                 messages = self._build_messages(task)
-            raw_response = self.model.complete(messages)
+            raw_response = await self.model.complete(messages)
 
             try:
                 model_step = parse_model_step(raw_response)
@@ -247,15 +327,22 @@ class OrchestratorAgent:
                     task_desc = model_step.action_input.get("task_description", "")
                     task_ctx = model_step.action_input.get("task_context", "")
                     expected_out = model_step.action_input.get("expected_output", "")
-                    fork_result = self._fork_subagent(task, task_desc, task_ctx, expected_out)
 
+                    # 收集 subagent 请求，稍后批量并行执行
+                    fork_request = ForkRequest(
+                        task_description=task_desc,
+                        task_context=task_ctx,
+                        expected_output=expected_out
+                    )
+                    self._pending_subagent_requests.append(fork_request)
+                    logger.info(f"Queued subagent request: {task_desc[:50]}...")
+
+                    # 立即返回一个临时观察，让 LLM 继续发送更多 fork 请求
                     observation = {
-                        "ok": fork_result.success,
+                        "ok": True,
                         "tool": "fork_subagent",
-                        "subagent_name": fork_result.subagent_name,
-                        "result": str(fork_result.result) if fork_result.result else None,
-                        "error": fork_result.error,
-                        "steps": [s.to_dict() for s in fork_result.steps],
+                        "status": "queued",
+                        "message": f"Subagent request queued. Total pending: {len(self._pending_subagent_requests)}",
                     }
 
                     step_record = OrchestratorStepRecord(
@@ -265,10 +352,43 @@ class OrchestratorAgent:
                         action_input=model_step.action_input,
                         raw_response=raw_response,
                         observation=observation,
-                        ok=fork_result.success,
+                        ok=True,
                     )
                     self._state.steps.append(step_record)
                     continue
+
+                # 如果有待执行的 subagent 请求，先并行执行它们
+                if self._pending_subagent_requests and model_step.action != "fork_subagent":
+                    logger.info(f"Executing {len(self._pending_subagent_requests)} pending subagents before {model_step.action}")
+                    parallel_results = await self._execute_pending_subagents_parallel(task)
+
+                    # 添加 subagent 执行结果到观察
+                    subagent_observation = {
+                        "ok": all(r.success for r in parallel_results),
+                        "tool": "parallel_subagents_completed",
+                        "subagent_count": len(parallel_results),
+                        "successful_count": sum(1 for r in parallel_results if r.success),
+                        "results": [
+                            {
+                                "subagent_name": r.subagent_name,
+                                "success": r.success,
+                                "result": str(r.result) if r.result else None,
+                                "error": r.error,
+                            }
+                            for r in parallel_results
+                        ],
+                    }
+                    self._state.steps.append(
+                        OrchestratorStepRecord(
+                            step_index=step_index,
+                            thought=f"[PARALLEL SUBAGENTS] Executed {len(parallel_results)} subagents in parallel",
+                            action="parallel_subagents_completed",
+                            action_input={},
+                            raw_response="",
+                            observation=subagent_observation,
+                            ok=subagent_observation["ok"],
+                        )
+                    )
 
                 tool_result = self.tools.execute(task, model_step.action, model_step.action_input)
                 observation = {
@@ -289,34 +409,87 @@ class OrchestratorAgent:
                 self._state.steps.append(step_record)
 
                 if tool_result.is_terminal:
-                    # 答案提交，进行验证（如果启用且未验证过）
-                    if (self._enable_verification 
-                        and not self._state.verification_done 
+                    # 答案提交，进行验证（如果启用且未超过最大验证次数）
+                    max_verification_attempts = 3  # 最多验证3次（防止死循环）
+                    should_run_verification = (
+                        self._enable_verification 
                         and tool_result.answer
-                        and should_verify_answer(task, tool_result.answer)):
+                        and should_verify_answer(task, tool_result.answer)
+                        and self._state.verification_attempt_count < max_verification_attempts
+                    )
+                    
+                    if should_run_verification:
+                        self._state.verification_attempt_count += 1
+                        logger.info(f"Running verification attempt {self._state.verification_attempt_count}/{max_verification_attempts}")
                         
-                        verification_passed = self._verify_answer(task, tool_result.answer, model_step.thought)
+                        verification_result = await self._verify_answer(task, tool_result.answer, model_step.thought)
                         
-                        if verification_passed:
+                        # 处理验证结果
+                        if verification_result is None:
+                            # 验证执行失败（如工具错误、异常等），无法完成验证
+                            # 这种情况下接受答案，因为验证本身出了问题
+                            logger.warning(f"Verification could not be completed (attempt {self._state.verification_attempt_count}). Accepting answer without verification.")
+                            self._state.answer = tool_result.answer
+                            break
+                        elif verification_result.is_valid and verification_result.confidence >= 0.7:
                             # 验证通过，接受答案
+                            logger.info("Verification passed! Accepting answer.")
                             self._state.answer = tool_result.answer
                             break
                         else:
-                            # 验证失败，拒绝答案并继续推理
-                            # 添加验证失败的观察，让agent重新推理
+                            # 验证判断答案错误，拒绝答案并继续推理
+                            logger.info(f"Verification failed. Reason: {verification_result.reasoning}")
+                            
+                            # 构建详细的验证失败反馈
+                            failure_reason = verification_result.reasoning
+                            suggested_fix = verification_result.suggested_fix
+                            confidence = verification_result.confidence
+                            
+                            # 根据置信度调整反馈策略
+                            if confidence >= 0.5:
+                                # 置信度中等，可能是计算错误，建议重新检查
+                                feedback = (
+                                    f"Your answer was verified and found LIKELY INCORRECT (confidence: {confidence:.2f}).\n\n"
+                                    f"Reason: {failure_reason}\n\n"
+                                )
+                            else:
+                                # 置信度低，可能是数据源或方法错误
+                                feedback = (
+                                    f"Your answer was verified and found INCORRECT (confidence: {confidence:.2f}).\n\n"
+                                    f"Reason: {failure_reason}\n\n"
+                                )
+                            
+                            if suggested_fix:
+                                feedback += f"Suggested fix: {suggested_fix}\n\n"
+                            
+                            remaining_attempts = max_verification_attempts - self._state.verification_attempt_count
+                            if remaining_attempts > 0:
+                                feedback += (
+                                    "Please reconsider your approach and provide a corrected answer. "
+                                    f"You have {remaining_attempts} verification attempt(s) remaining."
+                                )
+                            else:
+                                feedback += (
+                                    "No more verification attempts remaining. Please provide your best answer."
+                                )
+                            
                             verification_failed_observation = {
                                 "ok": False,
                                 "tool": "verification",
                                 "content": {
                                     "status": "rejected",
-                                    "reason": self._state.verification_result.reasoning if self._state.verification_result else "Answer verification failed",
-                                    "suggested_fix": self._state.verification_result.suggested_fix if self._state.verification_result else None,
+                                    "reason": failure_reason,
+                                    "suggested_fix": suggested_fix,
+                                    "confidence": confidence,
+                                    "attempt": self._state.verification_attempt_count,
+                                    "max_attempts": max_verification_attempts,
+                                    "detailed_feedback": feedback,
                                 },
                             }
                             
                             step_record = OrchestratorStepRecord(
                                 step_index=step_index,
-                                thought=f"[VERIFICATION FAILED] {model_step.thought}",
+                                thought=f"[VERIFICATION FAILED - Attempt {self._state.verification_attempt_count}/{max_verification_attempts}] {model_step.thought}",
                                 action="verification_failed",
                                 action_input={},
                                 raw_response="",
@@ -325,11 +498,13 @@ class OrchestratorAgent:
                             )
                             self._state.steps.append(step_record)
                             
-                            # 标记已验证过，避免死循环
-                            self._state.verification_done = True
+                            # 不标记 verification_done，允许重新验证新答案
+                            # 但增加计数器防止死循环
                             continue  # 继续下一个step，让agent重新推理
                     else:
-                        # 验证未启用或已验证过，直接接受答案
+                        # 验证未启用、已用完验证次数，或不需要验证，直接接受答案
+                        if self._state.verification_attempt_count >= max_verification_attempts:
+                            logger.warning(f"Max verification attempts ({max_verification_attempts}) reached. Accepting answer without verification.")
                         self._state.answer = tool_result.answer
                         break
 

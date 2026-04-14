@@ -21,10 +21,16 @@ Example response when querying data:
 {"thought":"Plan: 1. ✓ Listed files\n2. Now read the relevant CSV file\n3. Filter based on conditions\n\nBlocker: None\n\nI'll read the data file to examine its contents.","action":"read_doc","action_input":{"path": "context/data.csv"}}
 ```
 
-Example response for final answer:
+Example response for final answer (CORRECT - only requested columns):
 ```json
-{"thought":"Plan: 1. ✓ Read data\n2. ✓ Filtered records\n3. ✓ Calculated results\n\nBlocker: None\n\nI have the final result table.","action":"answer","action_input":{"columns":["first_name","last_name","total_cost"],"rows":[["Sacha","Harrison",866.25]]}}
+{"thought":"Plan: 1. ✓ Read data\n2. ✓ Filtered records\n3. ✓ Calculated results\n\nBlocker: None\n\nI have the final result table with ONLY the columns requested in the task.","action":"answer","action_input":{"columns":["first_name","last_name","total_cost"],"rows":[["Sacha","Harrison",866.25]]}}
 ```
+
+Example response for final answer (INCORRECT - extra columns):
+```json
+{"thought":"Plan: 1. ✓ Read data\n2. ✓ Filtered records\n3. ✓ Calculated results\n\nBlocker: None\n\nI have the final result table.","action":"answer","action_input":{"columns":["first_name","last_name","total_cost","id","date"],"rows":[["Sacha","Harrison",866.25,123,"2024-01-01"]]}}
+```
+The above is WRONG because it includes extra columns "id" and "date" that were not requested in the task.
 """.strip()
 
 
@@ -64,6 +70,7 @@ When you have the final result, you MUST use the `answer` tool with this exact J
 5. Always wrap the JSON object in exactly one fenced code block starting with ```json and ending with ```
 6. Do not output any text before or after the fenced JSON block
 7. When returning numerical results in the `answer` tool, use the full precision without rounding
+8. **CRITICAL**: Before answering, double-check you have not included any extra columns beyond what the task explicitly requests
 """.strip()
 
 
@@ -152,19 +159,62 @@ The sub-agent will inherit your complete context including:
 
 Some tasks contain data in unstructured formats (e.g., text documents, markdown files) rather than structured databases. When you encounter such tasks:
 
-1. **Use `read_doc` to read the full content** of text/markdown files
+1. **Use `read_doc` to read the content** of text/markdown files (note: max_chars default is 4000, use offset parameter for large files)
 2. **Use `execute_python` with regex or string parsing** to extract structured information
 3. **Do NOT assume SQLite databases exist** - Check `list_context` first to see what files are actually available
 4. **For complex parsing tasks**, consider using sub-agents to handle different document types in parallel
 
-## Output Formatting Rules
-1. **Preserve Individual Fields**: When asked for "full name" or similar combined attributes, always return the individual components (e.g. first_name and last_name) as separate columns in your final output.
-2. **Multi-Column Output**: For tasks involving multiple attributes or dimensions, return results with distinct columns for each attribute rather than combining them into a single column.
-3. **Structured Results**: Use the `answer` tool with appropriate column names that match the data schema (e.g. `["first_name", "last_name"]` instead of `["full_name"]`).
-4. **Clarity**: If a task asks for "full name", you may include both the combined full name and individual components if it adds value, but prioritize returning the individual fields as separate columns.
-5. **Minimal Output**: Only return the columns explicitly requested in the task. Do not include intermediate columns or additional information unless specifically asked for. If the task asks for a ratio or calculated value, return only that final result column.
-6. **Column Name Mapping**: Use the column names specified in the task or data schema.
-7. **Strict Focus**: Even if you need intermediate columns for calculations, do not include them in the final answer. Only include the exact columns requested in the task description.
+## Handling Large Documents (CRITICAL)
+
+When dealing with large text/markdown files (>500 lines or >50KB):
+
+### Strategy 1: Parallel Chunk Processing (RECOMMENDED)
+1. **First, use `execute_python` to get file statistics** (line count, structure)
+2. **Fork multiple sub-agents in sequence** - they will be automatically executed in parallel:
+   - Sub-agent 1: Process first N lines/records
+   - Sub-agent 2: Process next N lines/records
+   - Continue until entire file is covered
+3. **Each sub-agent** uses `execute_python` with file seeking or line slicing to read its assigned chunk
+4. **Results will be combined automatically** after all sub-agents complete
+
+### Strategy 2: Targeted Search
+1. **Use `execute_python` with regex** to search for specific patterns/keywords
+2. **Extract only relevant sections** rather than reading entire file
+3. **Focus on records matching the query criteria**
+
+### Critical Rules for Large Documents:
+- **NEVER attempt to read the entire large file at once** - it will be truncated at 4000 chars
+- **ALWAYS use sub-agents for parallel processing** on hard/extreme tasks with large documents
+- **Use execute_python for precise line-based extraction** rather than read_doc for large files
+- **Fork sub-agents in sequence** - the system will automatically batch and execute them in parallel
+
+## Output Formatting Rules (CRITICAL)
+
+### 1. Strict Column Matching (MANDATORY)
+- **ONLY** return the columns explicitly requested in the task question
+- **NEVER** include intermediate calculation columns in the final answer
+- **NEVER** add extra columns beyond what is asked
+- Example: If task asks for "name and score", return ONLY `["name", "score"]` - do NOT add `["name", "score", "id", "date"]`
+
+### 2. Aggregation and Grouping
+- When the task asks for "type of X and their total value", group by the TYPE as requested
+- **DO NOT** break down the type into subcategories unless explicitly asked
+- Example: If task asks for "expense type" and the type is "Meeting", return "Meeting" - do NOT split into "Food" and "Advertisement"
+- The grouping column should match the task's exact wording
+
+### 3. Preserve Individual Fields
+- When asked for "full name" or similar combined attributes, return individual components (e.g. first_name and last_name) as separate columns.
+
+### 4. Column Name Mapping
+- Use the column names specified in the task or data schema
+- Match the task's terminology exactly (e.g., if task says "expense_type", use "expense_type" not "type")
+
+### 5. Minimal Output Reminder
+Before submitting your answer, verify:
+- [ ] Did I include ONLY the columns requested in the task?
+- [ ] Did I remove all intermediate calculation columns?
+- [ ] Did I group by the correct column as specified in the task?
+- [ ] Did I use the exact column names from the task description?
 
 ## Core Rules
 
@@ -186,11 +236,48 @@ Some tasks contain data in unstructured formats (e.g., text documents, markdown 
 
 
 def build_task_prompt(task: PublicTask) -> str:
-    return (
+    base_prompt = (
         f"Question: {task.question}\n"
         "All tool file paths are relative to the task context directory. "
         "When you have the final table, call the `answer` tool."
     )
+
+    # 检测是否涉及大文档处理的关键词
+    question_lower = task.question.lower()
+    large_doc_keywords = [
+        'patient', 'laboratory', 'medical record', 'large document',
+        'markdown', '.md', 'text file', 'unstructured data'
+    ]
+
+    # 如果任务涉及大文档且难度较高，注入额外提示
+    is_hard_or_extreme = task.difficulty.lower() in ("hard", "extreme")
+    has_large_doc_indicator = any(kw in question_lower for kw in large_doc_keywords)
+
+    if is_hard_or_extreme and has_large_doc_indicator:
+        large_doc_reminder = """
+
+## IMPORTANT: Large Document Processing Required
+
+This task likely involves large text/markdown files (e.g., Patient.md, Laboratory.md).
+
+**You MUST:**
+1. Use `list_context` first to identify all document files and their sizes
+2. Use `execute_python` to check line counts before processing
+3. **Fork multiple sub-agents in sequence** to process large files in parallel chunks
+   - The system will automatically batch and execute them in parallel
+   - Each sub-agent should process a specific line range (e.g., lines 1-500, 501-1000, etc.)
+4. **DO NOT use `read_doc` for large files** - it only returns first 4000 chars
+5. Use `execute_python` with file reading and line slicing instead
+
+**Example approach:**
+- Fork sub-agent 1: "Process Patient.md lines 1-500, find male patients"
+- Fork sub-agent 2: "Process Patient.md lines 501-1000, find male patients"
+- Fork sub-agent 3: "Process Patient.md lines 1001+, find male patients"
+- The system will execute all 3 in parallel and return combined results
+"""
+        base_prompt += large_doc_reminder
+
+    return base_prompt
 
 
 def build_observation_prompt(observation: dict[str, object]) -> str:

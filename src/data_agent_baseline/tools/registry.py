@@ -148,8 +148,14 @@ class ToolRegistry:
         return action in self.handlers or action in self.specs
 
 
-def create_default_tool_registry() -> ToolRegistry:
-    specs = {
+def create_default_tool_registry(include_fork_subagent: bool = True) -> ToolRegistry:
+    """Create the default tool registry.
+    
+    Args:
+        include_fork_subagent: Whether to include the fork_subagent tool in specs.
+            Should be False for SubAgents to prevent nested forking.
+    """
+    specs: dict[str, ToolSpec] = {
         "answer": ToolSpec(
             name="answer",
             description="Submit the final answer table. This is the only valid terminating action.",
@@ -204,7 +210,11 @@ def create_default_tool_registry() -> ToolRegistry:
             description="Read a preview of a JSON file inside context.",
             input_schema={"path": "relative/path/to/file.json", "max_chars": 4000},
         ),
-        "fork_subagent": ToolSpec(
+    }
+    
+    # Only include fork_subagent in specs if requested (for Orchestrator, not SubAgents)
+    if include_fork_subagent:
+        specs["fork_subagent"] = ToolSpec(
             name="fork_subagent",
             description="Fork a sub-agent to handle a parallel sub-task. Use this when you identify independent work streams that can be executed in parallel. The sub-agent will inherit your context and work independently.",
             input_schema={
@@ -212,8 +222,8 @@ def create_default_tool_registry() -> ToolRegistry:
                 "task_context": "Context information for the sub-task",
                 "expected_output": "Expected output format from the sub-agent",
             },
-        ),
-    }
+        )
+    
     handlers = {
         "answer": _answer,
         "calculate_math": _calculate_math,

@@ -223,7 +223,15 @@ class SubAgent:
         """
         # 构建系统提示词（仅在第一步添加）
         if not self.state.steps:
-            system_prompt = build_subagent_system_prompt()
+            base_prompt = build_subagent_system_prompt()
+            tool_descriptions = self.tools.describe_for_prompt()
+            system_prompt = (
+                f"{base_prompt}\n\n"
+                "Available tools:\n"
+                f"{tool_descriptions}\n\n"
+                "You must always return a single ```json fenced block containing one JSON object "
+                "with keys `thought`, `action`, and `action_input`, and no extra text."
+            )
             messages = [ModelMessage(role="system", content=system_prompt)]
         else:
             messages = []
@@ -258,7 +266,7 @@ class SubAgent:
 
         return messages
 
-    def run(self, task: PublicTask) -> ForkResult:
+    async def run(self, task: PublicTask) -> ForkResult:
         self.sub_task = task
         self.state = AgentRuntimeState()
 
@@ -269,7 +277,13 @@ class SubAgent:
             # Build messages with schema knowledge
             messages = self._build_messages_with_schema(task, schema_knowledge)
 
-            raw_response = self.model.complete(messages)
+            # Add urgency reminder when approaching max steps (last 5 steps)
+            remaining_steps = self.config.max_steps - step_index + 1
+            if remaining_steps <= 5:
+                urgency_message = f"\n\n URGENT: You have only {remaining_steps} step(s) remaining out of {self.config.max_steps} total steps. You MUST submit your final answer using the 'answer' tool in the next step(s). If you do not submit an answer within the remaining steps, the task will fail."
+                messages.append(ModelMessage(role="user", content=urgency_message))
+
+            raw_response = await self.model.complete(messages)
 
             try:
                 model_step = parse_model_step(raw_response)

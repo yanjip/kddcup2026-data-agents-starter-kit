@@ -5,8 +5,13 @@ agent:
   model: YOUR_MODEL_NAME
   api_base: YOUR_API_BASE_URL
   api_key: YOUR_API_KEY
-  max_steps: 16
-  temperature: 0.0
+  max_steps: 30
+  temperature: 0.3
+  # Orchestrator agent specific config
+  max_main_steps: 28
+  max_subagent_steps: 18
+  max_subagents: 4
+  enable_verification: false
 
 run:
   output_dir: artifacts/runs

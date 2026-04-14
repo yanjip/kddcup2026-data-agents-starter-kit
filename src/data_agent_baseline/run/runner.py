@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import csv
 import json
 import multiprocessing
@@ -112,7 +113,7 @@ def _failure_run_result_payload(task_id: str, failure_reason: str) -> dict[str, 
     }
 
 
-def _run_single_task_core(
+async def _run_single_task_core_async(
     *,
     task_id: str,
     config: AppConfig,
@@ -122,32 +123,60 @@ def _run_single_task_core(
     public_dataset = DABenchPublicDataset(config.dataset.root_path)
     task = public_dataset.get_task(task_id)
 
+    # 创建 model adapter（如果未提供）
+    model_adapter = model or build_model_adapter(config)
+
     agent = OrchestratorAgent(
-        model=model or build_model_adapter(config),
+        model=model_adapter,
         tools=tools or create_default_tool_registry(),
         config=OrchestratorAgentConfig(
             max_main_steps=config.agent.max_main_steps,
             max_subagent_steps=config.agent.max_subagent_steps,
             max_subagents=config.agent.max_subagents,
+            enable_verification=getattr(config.agent, 'enable_verification', True),
         ),
     )
-    run_result = agent.run(task)
-    return run_result.to_dict()
+    try:
+        run_result = await agent.run(task)
+        return run_result.to_dict()
+    finally:
+        # 关闭 model adapter 以防止 'Event loop is closed' 警告
+        if hasattr(model_adapter, 'close'):
+            await model_adapter.close()
+
+
+def _run_single_task_core(
+    *,
+    task_id: str,
+    config: AppConfig,
+    model=None,
+    tools: ToolRegistry | None = None,
+) -> dict[str, Any]:
+    """同步包装器，用于运行异步代码"""
+    return asyncio.run(_run_single_task_core_async(
+        task_id=task_id,
+        config=config,
+        model=model,
+        tools=tools,
+    ))
 
 
 def _run_single_task_in_subprocess(task_id: str, config: AppConfig, queue: multiprocessing.Queue[Any]) -> None:
+    import traceback
     try:
+        result = _run_single_task_core(task_id=task_id, config=config)
         queue.put(
             {
                 "ok": True,
-                "run_result": _run_single_task_core(task_id=task_id, config=config),
+                "run_result": result,
             }
         )
     except BaseException as exc:  # noqa: BLE001
+        error_msg = f"{str(exc)}\n{traceback.format_exc()}"
         queue.put(
             {
                 "ok": False,
-                "error": str(exc),
+                "error": error_msg,
             }
         )
 
@@ -223,10 +252,8 @@ def run_single_task(
     tools: ToolRegistry | None = None,
 ) -> TaskRunArtifacts:
     started_at = perf_counter()
-    if model is None and tools is None:
-        run_result = _run_single_task_with_timeout(task_id=task_id, config=config)
-    else:
-        run_result = _run_single_task_core(task_id=task_id, config=config, model=model, tools=tools)
+    # 对于单个任务，直接在主进程中运行（不使用子进程），便于调试和查看日志
+    run_result = _run_single_task_core(task_id=task_id, config=config, model=model, tools=tools)
     run_result["e2e_elapsed_seconds"] = round(perf_counter() - started_at, 3)
     return _write_task_outputs(task_id, run_output_dir, run_result)
 

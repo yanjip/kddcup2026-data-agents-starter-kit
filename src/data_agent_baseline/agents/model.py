@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from openai import APIError, OpenAI
+from openai import APIError, AsyncOpenAI
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +26,7 @@ class ModelStep:
 
 
 class ModelAdapter(Protocol):
-    def complete(self, messages: list[ModelMessage]) -> str:
+    async def complete(self, messages: list[ModelMessage]) -> str:
         raise NotImplementedError
 
 
@@ -42,22 +43,32 @@ class OpenAIModelAdapter:
         self.api_base = api_base.rstrip("/")
         self.api_key = api_key
         self.temperature = temperature
+        self._client: AsyncOpenAI | None = None
 
-    def complete(self, messages: list[ModelMessage]) -> str:
-        if not self.api_key:
-            raise RuntimeError("Missing model API key in config.agent.api_key.")
+    @property
+    def client(self) -> AsyncOpenAI:
+        if self._client is None:
+            if not self.api_key:
+                raise RuntimeError("Missing model API key in config.agent.api_key.")
+            self._client = AsyncOpenAI(
+                api_key=self.api_key,
+                base_url=self.api_base,
+            )
+        return self._client
+    
+    async def close(self) -> None:
+        """Close the async client to prevent 'Event loop is closed' warnings."""
+        if self._client is not None:
+            await self._client.close()
+            self._client = None
 
-        client = OpenAI(
-            api_key=self.api_key,
-            base_url=self.api_base,
-        )
-
+    async def complete(self, messages: list[ModelMessage]) -> str:
         max_retries = 5
         last_exception = None
 
         for attempt in range(1, max_retries + 1):
             try:
-                response = client.chat.completions.create(
+                response = await self.client.chat.completions.create(
                     model=self.model,
                     messages=[{"role": message.role, "content": message.content} for message in messages],
                     extra_body={"enable_thinking": True},
@@ -76,7 +87,7 @@ class OpenAIModelAdapter:
                 last_exception = exc
                 if attempt < max_retries:
                     logger.warning(f"Model request failed (attempt {attempt}/{max_retries}): {exc}. Retrying...")
-                    time.sleep(1.5 * attempt)  # 指数退避：0.5s, 1s, 1.5s, 2s, 2.5s
+                    await asyncio.sleep(1.5 * attempt)  # 指数退避
                 else:
                     logger.error(f"Model request failed after {max_retries} attempts: {exc}")
                     raise RuntimeError(f"Model request failed after {max_retries} attempts: {exc}") from exc
@@ -84,7 +95,7 @@ class OpenAIModelAdapter:
                 last_exception = exc
                 if attempt < max_retries:
                     logger.warning(f"Model request failed (attempt {attempt}/{max_retries}): {exc}. Retrying...")
-                    time.sleep(1.5 * attempt)
+                    await asyncio.sleep(1.5 * attempt)
                 else:
                     logger.error(f"Model request failed after {max_retries} attempts: {exc}")
                     raise RuntimeError(f"Model request failed after {max_retries} attempts: {exc}") from exc
@@ -94,7 +105,7 @@ class ScriptedModelAdapter:
     def __init__(self, responses: list[str]) -> None:
         self._responses = list(responses)
 
-    def complete(self, messages: list[ModelMessage]) -> str:
+    async def complete(self, messages: list[ModelMessage]) -> str:
         del messages
         if not self._responses:
             raise RuntimeError("No scripted model responses remaining.")

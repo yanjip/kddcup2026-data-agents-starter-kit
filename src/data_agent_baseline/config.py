@@ -33,6 +33,7 @@ class AgentConfig:
     max_main_steps: int = 10
     max_subagent_steps: int = 12
     max_subagents: int = 6
+    enable_verification: bool = False  # 是否启用验证 Agent
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,6 +82,7 @@ def load_app_config(config_path: Path) -> AppConfig:
         max_main_steps=int(agent_payload.get("max_main_steps", agent_defaults.max_main_steps)),
         max_subagent_steps=int(agent_payload.get("max_subagent_steps", agent_defaults.max_subagent_steps)),
         max_subagents=int(agent_payload.get("max_subagents", agent_defaults.max_subagents)),
+        enable_verification=bool(agent_payload.get("enable_verification", agent_defaults.enable_verification)),
     )
     raw_run_id = run_payload.get("run_id")
     run_id = run_defaults.run_id
