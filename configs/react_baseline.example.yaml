@@ -11,7 +11,7 @@ agent:
   max_main_steps: 28
   max_subagent_steps: 18
   max_subagents: 4
-  enable_verification: false
+
 
 run:
   output_dir: artifacts/runs

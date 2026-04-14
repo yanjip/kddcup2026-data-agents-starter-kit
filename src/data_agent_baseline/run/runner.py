@@ -138,7 +138,7 @@ async def _run_single_task_core_async(
             max_main_steps=config.agent.max_main_steps,
             max_subagent_steps=config.agent.max_subagent_steps,
             max_subagents=config.agent.max_subagents,
-            enable_verification=getattr(config.agent, 'enable_verification', True),
+
         ),
     )
     try:
