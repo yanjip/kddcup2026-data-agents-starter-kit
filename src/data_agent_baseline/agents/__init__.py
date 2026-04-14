@@ -20,6 +20,9 @@ from data_agent_baseline.agents.prompt import (
     build_orchestrator_system_prompt,
     build_subagent_system_prompt,
     build_task_prompt,
+    build_verification_observation_prompt,
+    build_verification_task_prompt,
+    integrate_verification_result,
 )
 from data_agent_baseline.agents.runtime import AgentRunResult, AgentRuntimeState, StepRecord
 from data_agent_baseline.agents.subagent import (
@@ -28,6 +31,12 @@ from data_agent_baseline.agents.subagent import (
     SchemaKnowledge,
     SubAgent,
     SubAgentConfig,
+)
+from data_agent_baseline.agents.verification_agent import (
+    VerificationAgent,
+    VerificationAgentConfig,
+    VerificationResult,
+    should_verify_answer,
 )
 
 
@@ -52,10 +61,8 @@ __all__ = [
     "SUBAGENT_RESPONSE_EXAMPLES",
     "SubAgent",
     "SubAgentConfig",
-    "VERIFICATION_SYSTEM_PROMPT",
     "VerificationAgent",
     "VerificationAgentConfig",
-    "VerificationOrchestratorConfig",
     "VerificationResult",
     "build_observation_prompt",
     "build_orchestrator_system_prompt",

@@ -58,3 +58,32 @@ self.state.失败原因 = f"子代理未在最大步数内完成（{self.config.
 - orchestrator.py - 包含完整的 Orchestrator 实现，支持子代理 fork 和结果汇总
 - subagent.py - 从 496 行减少到约 120 行，仅保留 SubAgent 核心逻辑
 - __init__.py - 更新导出路径，保持向后兼容
+
+
+关于 `max_workers` 配置的代码实现，看看它是如何被使用的。
+根据代码分析，`max_workers` 的作用如下：
+
+## `max_workers` 的作用
+
+**是多线程并行，不是多进程。**
+
+具体实现见 [runner.py](file:///Users/yanjp/PycharmProjects/kddcup2026-data-agents-starter-kit/src/data_agent_baseline/run/runner.py#L274)：
+
+1. **使用 `ThreadPoolExecutor`**：代码使用 Python 的 `concurrent.futures.ThreadPoolExecutor` 来实现多线程并行，在第 274 行：
+   ```python
+   with ThreadPoolExecutor(max_workers=effective_workers) as executor:
+   ```
+
+2. **并行粒度**：`max_workers` 控制的是**同时处理多少个任务**（task）。每个任务会被提交到一个线程池中并行执行。
+
+3. **单线程降级**：如果传入了自定义的 `model` 或 `tools` 参数，会自动降级为单线程（第 252-253 行），避免共享状态的并发问题。
+
+4. **默认值为 4**：配置文件中默认设置为 4，意味着最多同时有 4 个任务在并行处理。
+
+## 总结
+
+| 配置项 | 作用 | 实现方式 |
+|--------|------|----------|
+| `max_workers` | 并行处理任务数 | 多线程 (`ThreadPoolExecutor`) |
+
+所以 `max_workers: 4` 表示**最多同时用 4 个线程并行跑 4 个任务**，提高整体吞吐量。

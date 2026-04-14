@@ -72,6 +72,16 @@ def _execute_context_sql(task: PublicTask, action_input: dict[str, Any]) -> Tool
 
 
 def _execute_python(task: PublicTask, action_input: dict[str, Any]) -> ToolExecutionResult:
+    if "code" not in action_input:
+        return ToolExecutionResult(
+            ok=False,
+            content={
+                "success": False,
+                "error": "Missing required parameter 'code'. The action_input must contain a 'code' key with Python code string.",
+                "output": "",
+                "stderr": "",
+            },
+        )
     code = str(action_input["code"])
     content = execute_python_code(
         context_root=task.context_dir,
@@ -133,6 +143,10 @@ class ToolRegistry:
             raise KeyError(f"Unknown tool: {action}")
         return self.handlers[action](task, action_input)
 
+    def has_tool(self, action: str) -> bool:
+        """Check if a tool is registered (either in handlers or specs)."""
+        return action in self.handlers or action in self.specs
+
 
 def create_default_tool_registry() -> ToolRegistry:
     specs = {
@@ -189,6 +203,15 @@ def create_default_tool_registry() -> ToolRegistry:
             name="read_json",
             description="Read a preview of a JSON file inside context.",
             input_schema={"path": "relative/path/to/file.json", "max_chars": 4000},
+        ),
+        "fork_subagent": ToolSpec(
+            name="fork_subagent",
+            description="Fork a sub-agent to handle a parallel sub-task. Use this when you identify independent work streams that can be executed in parallel. The sub-agent will inherit your context and work independently.",
+            input_schema={
+                "task_description": "Description of the sub-task",
+                "task_context": "Context information for the sub-task",
+                "expected_output": "Expected output format from the sub-agent",
+            },
         ),
     }
     handlers = {

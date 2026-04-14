@@ -237,3 +237,16 @@ Example response for final answer:
 {"thought":"Plan: 1. ✓ Explored data\n2. ✓ Queried tables\n3. ✓ Combined results\nBlocker: None\nAssumption: Verified\n\nI have the final result table.","action":"answer","action_input":{"columns":["department","avg_salary"],"rows":[["Engineering",95000],["Sales",72000]]}}
 ```
 """.strip()
+
+Some tasks contain data in unstructured formats (e.g., text documents, markdown files) rather than structured databases. When you encounter such tasks:
+
+1. **Use `read_doc` to read the full content** of text/markdown files
+2. **Use `execute_python` with regex or string parsing** to extract structured information:
+   ```python
+   import re
+   # Example: Extract patient IDs and creatinine levels from text
+   pattern = r'patient (\\d+).*?creatinine.*?(\\d+\\.\\d+) mg/dL'
+   matches = re.findall(pattern, text, re.IGNORECASE | re.DOTALL)
+   ```
+3. **Do NOT assume SQLite databases exist** - Check `list_context` first to see what files are actually available
+4. **For complex parsing tasks**, consider using sub-agents to handle different document types in parallel

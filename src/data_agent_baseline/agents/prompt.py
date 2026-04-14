@@ -92,7 +92,38 @@ Example response for final answer:
 
 
 
-def build_orchestrator_system_prompt(max_subagents: int) -> str:
+def build_orchestrator_system_prompt(max_subagents: int, difficulty: str = "medium") -> str:
+    # Determine if this is a hard/extreme difficulty task requiring mandatory subagent usage
+    is_hard_or_extreme = difficulty.lower() in ("hard", "extreme")
+
+    mandatory_subagent_section_template = """
+## ⚠️ MANDATORY SUBAGENT USAGE REQUIRED ⚠️
+
+This is a HIGH DIFFICULTY task (difficulty: {difficulty}). You **MUST** use sub-agents to solve this task.
+
+### Requirements:
+1. **ALWAYS fork at least 1 sub-agent** - Do not attempt to solve this task entirely by yourself
+2. **Break down the problem** - Identify at least 2-3 independent sub-tasks that can run in parallel
+3. **Delegate effectively** - Use fork_subagent for:
+   - Exploring different data sources simultaneously
+   - Investigating multiple hypotheses in parallel
+   - Handling complex multi-step transformations
+   - Cross-validating results across different approaches
+
+### Example approach for hard tasks:
+```json
+{{"thought":"This is a hard task requiring parallel exploration. I'll fork 2 sub-agents:\n1. Sub-agent A: Explore data source X and find relevant records\n2. Sub-agent B: Explore data source Y and find relevant records\nThen I'll combine their results.","action":"fork_subagent","action_input":{{"task_description":"Explore data source X","task_context":"Focus on finding...","expected_output":"List of relevant records from X"}}}}
+```
+
+### Important:
+- You have {max_subagents} sub-agents available - use them wisely
+- Sub-agents inherit your full context, so they know what you've learned
+- After sub-agents complete, synthesize their results for the final answer
+- **Failure to use sub-agents on hard/extreme tasks will likely result in incomplete solutions**
+""".strip()
+
+    mandatory_subagent_section = mandatory_subagent_section_template.format(difficulty=difficulty, max_subagents=max_subagents) if is_hard_or_extreme else ""
+
     return f"""
 You are the Orchestrator Agent responsible for coordinating complex data analysis tasks.
 
@@ -115,10 +146,21 @@ The sub-agent will inherit your complete context including:
 - Full conversation history
 - All tool registrations
 
+{mandatory_subagent_section}
+
+## Handling Unstructured Data
+
+Some tasks contain data in unstructured formats (e.g., text documents, markdown files) rather than structured databases. When you encounter such tasks:
+
+1. **Use `read_doc` to read the full content** of text/markdown files
+2. **Use `execute_python` with regex or string parsing** to extract structured information
+3. **Do NOT assume SQLite databases exist** - Check `list_context` first to see what files are actually available
+4. **For complex parsing tasks**, consider using sub-agents to handle different document types in parallel
+
 ## Output Formatting Rules
-1. **Preserve Individual Fields**: When asked for "full name" or similar combined attributes, always return the individual components (e.g., first_name and last_name) as separate columns in your final output.
+1. **Preserve Individual Fields**: When asked for "full name" or similar combined attributes, always return the individual components (e.g. first_name and last_name) as separate columns in your final output.
 2. **Multi-Column Output**: For tasks involving multiple attributes or dimensions, return results with distinct columns for each attribute rather than combining them into a single column.
-3. **Structured Results**: Use the `answer` tool with appropriate column names that match the data schema (e.g., `["first_name", "last_name"]` instead of `["full_name"]`).
+3. **Structured Results**: Use the `answer` tool with appropriate column names that match the data schema (e.g. `["first_name", "last_name"]` instead of `["full_name"]`).
 4. **Clarity**: If a task asks for "full name", you may include both the combined full name and individual components if it adds value, but prioritize returning the individual fields as separate columns.
 5. **Minimal Output**: Only return the columns explicitly requested in the task. Do not include intermediate columns or additional information unless specifically asked for. If the task asks for a ratio or calculated value, return only that final result column.
 6. **Column Name Mapping**: Use the column names specified in the task or data schema.
@@ -154,3 +196,81 @@ def build_task_prompt(task: PublicTask) -> str:
 def build_observation_prompt(observation: dict[str, object]) -> str:
     rendered = json.dumps(observation, ensure_ascii=False, indent=2)
     return f"Observation:\n{rendered}"
+
+
+# =============================================================================
+# Verification Agent Prompts
+# =============================================================================
+
+def build_verification_task_prompt(
+    task: PublicTask, 
+    proposed_answer: dict[str, Any],
+    original_reasoning: str = ""
+) -> str:
+    """构建验证任务的提示词"""
+    reasoning_section = f"\n## Original Reasoning\n{original_reasoning}\n" if original_reasoning else ""
+    
+    return f"""## Verification Task
+
+You are verifying if the proposed answer is correct for the given question.
+
+### Original Question
+{task.question}
+
+### Proposed Answer
+Columns: {proposed_answer.get('columns', [])}
+Rows: {proposed_answer.get('rows', [])}
+{reasoning_section}
+### Your Goal
+1. Work backwards from the answer to verify it against the data
+2. Find evidence that supports or contradicts the answer
+3. Return your verification result using the `answer` tool
+
+Use the available tools to explore the data and verify the answer.
+""".strip()
+
+
+def build_verification_observation_prompt(observation: dict[str, object]) -> str:
+    """构建验证Agent的观察提示词"""
+    rendered = json.dumps(observation, ensure_ascii=False, indent=2)
+    return f"Verification Observation:\n{rendered}"
+
+
+def integrate_verification_result(
+    original_prompt: str,
+    verification_result: dict[str, Any]
+) -> str:
+    """
+    将验证结果整合到主Agent的prompt中
+    
+    当验证失败时，使用此函数生成反馈给主Agent的提示
+    """
+    is_valid = verification_result.get('is_valid', False)
+    reasoning = verification_result.get('reasoning', '')
+    suggested_fix = verification_result.get('suggested_fix', '')
+    
+    if is_valid:
+        return original_prompt
+    
+    feedback = f"""
+
+## ⚠️ PREVIOUS ANSWER FAILED VERIFICATION
+
+Your previous answer was rejected by the verification system.
+
+**Reason**: {reasoning}
+"""
+    
+    if suggested_fix:
+        feedback += f"\n**Suggested Fix**: {suggested_fix}\n"
+    
+    feedback += """
+Please reconsider your approach and provide a corrected answer.
+Think about:
+1. Did you use the correct data sources?
+2. Did you interpret the question correctly?
+3. Are there any edge cases you missed?
+
+"""
+    
+    return original_prompt + feedback
