@@ -13,7 +13,7 @@ from time import perf_counter
 from typing import Any
 
 from data_agent_baseline.agents.model import OpenAIModelAdapter
-from data_agent_baseline.agents.subagent import OrchestratorAgent, OrchestratorAgentConfig
+from data_agent_baseline.agents.orchestrator import OrchestratorAgent, OrchestratorAgentConfig
 from data_agent_baseline.benchmark.dataset import DABenchPublicDataset
 from data_agent_baseline.config import AppConfig
 from data_agent_baseline.tools.registry import ToolRegistry, create_default_tool_registry

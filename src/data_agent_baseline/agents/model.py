@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import logging
+import time
 from dataclasses import dataclass
 from typing import Any, Protocol
 
 from openai import APIError, OpenAI
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,23 +52,42 @@ class OpenAIModelAdapter:
             base_url=self.api_base,
         )
 
-        try:
-            response = client.chat.completions.create(
-                model=self.model,
-                messages=[{"role": message.role, "content": message.content} for message in messages],
-                extra_body={"enable_thinking": True},
-                temperature=self.temperature
-            )
-        except APIError as exc:
-            raise RuntimeError(f"Model request failed: {exc}") from exc
+        max_retries = 5
+        last_exception = None
 
-        choices = response.choices or []
-        if not choices:
-            raise RuntimeError("Model response missing choices.")
-        content = choices[0].message.content
-        if not isinstance(content, str):
-            raise RuntimeError("Model response missing text content.")
-        return content
+        for attempt in range(1, max_retries + 1):
+            try:
+                response = client.chat.completions.create(
+                    model=self.model,
+                    messages=[{"role": message.role, "content": message.content} for message in messages],
+                    extra_body={"enable_thinking": True},
+                    temperature=self.temperature
+                )
+
+                choices = response.choices or []
+                if not choices:
+                    raise RuntimeError("Model response missing choices.")
+                content = choices[0].message.content
+                if not isinstance(content, str):
+                    raise RuntimeError("Model response missing text content.")
+                return content
+
+            except APIError as exc:
+                last_exception = exc
+                if attempt < max_retries:
+                    logger.warning(f"Model request failed (attempt {attempt}/{max_retries}): {exc}. Retrying...")
+                    time.sleep(1.5 * attempt)  # 指数退避：0.5s, 1s, 1.5s, 2s, 2.5s
+                else:
+                    logger.error(f"Model request failed after {max_retries} attempts: {exc}")
+                    raise RuntimeError(f"Model request failed after {max_retries} attempts: {exc}") from exc
+            except Exception as exc:
+                last_exception = exc
+                if attempt < max_retries:
+                    logger.warning(f"Model request failed (attempt {attempt}/{max_retries}): {exc}. Retrying...")
+                    time.sleep(1.5 * attempt)
+                else:
+                    logger.error(f"Model request failed after {max_retries} attempts: {exc}")
+                    raise RuntimeError(f"Model request failed after {max_retries} attempts: {exc}") from exc
 
 
 class ScriptedModelAdapter:

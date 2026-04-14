@@ -1,2 +1,4 @@
-uv run dabench run-task task_86 --config configs/react_baseline.example.yaml --agent-type orchestrator
+uv run dabench run-task task_86 --config configs/aliyun.yaml
 uv run dabench run-task task_163 --config configs/yunwu.yaml
+uv run dabench run-benchmark --config configs/aliyun.yaml
+uv run python evaluate.py --gold-dir demo_samples/output --prediction-dir artifacts/runs/aliyun_run_id_20

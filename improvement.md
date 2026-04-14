@@ -142,3 +142,80 @@ OrchestratorAgent (subagent.py)  ← 高级代理
 **关键点**：`OrchestratorAgent` 和 `SubAgent` 都使用了 `REACT_SYSTEM_PROMPT`（定义在 react.py），但它们的架构不同：
 - `ReActAgent`：单一代理，自我循环
 - `OrchestratorAgent`：编排器，可以 fork 多个 `SubAgent` 并行执行子任务
+
+
+## JSON 解析问题修复记录
+
+### 问题现象
+
+在运行多个 task 时，Agent 反复出现 JSON 解析失败，导致任务无法完成。主要错误包括：
+
+1. **括号不匹配错误**：`Expecting ',' delimiter`
+   - LLM 生成的 `answer` 工具调用中，`rows` 数组缺少闭合方括号
+   - 例如：`"rows":[["Sacha","Harrison",866.25]}}`（少了一个 `]`）
+
+2. **未转义的换行符**：`Invalid control character`
+   - LLM 在 `thought` 字段中使用了实际的换行符（`\n`），而非转义后的 `\\n`
+
+3. **多余字符错误**：`Model response must contain only one JSON object`
+   - LLM 在 JSON 对象后添加了多余的双引号或其他字符
+   - 例如：`{"action":"list_context"...}}"}`（末尾多了 `"`）
+
+### 根因分析
+
+1. **LLM 输出不稳定**：即使 prompt 中明确要求正确的 JSON 格式，LLM 仍可能生成格式错误的 JSON
+2. **缺乏容错机制**：原始的 `parser.py` 对 JSON 格式要求严格，任何微小错误都会导致解析失败
+3. **SubAgent 缺少系统提示词**：SubAgent 继承 Orchestrator 的消息，但没有自己的系统提示词来指导 JSON 格式
+
+### 修复方案
+
+#### 1. 增强 parser.py 的容错能力
+
+在 `src/data_agent_baseline/agents/parser.py` 中添加三层修复机制：
+
+**a) `_sanitize_json_string` 函数**：清理字符串中的非法控制字符
+- 将 JSON 字符串值中的实际换行符（`\n`）、回车符（`\r`）、制表符（`\t`）转换为转义形式
+- 处理其他控制字符（ASCII < 32）为 Unicode 转义序列
+
+**b) `_fix_common_json_errors` 函数**：修复常见的括号不匹配问题
+- 检测方括号 `[`/`]` 和花括号 `{`/`}` 的数量不匹配
+- 当在数组上下文中遇到多余的 `}` 时，将其替换为 `]`
+- 补充或移除多余的闭合括号
+
+**c) `_strip_trailing_garbage` 函数**：移除 JSON 后的多余字符
+- 通过跟踪花括号深度，找到第一个完整的 JSON 对象
+- 丢弃 JSON 对象后的任何多余字符（如多余的双引号）
+
+#### 2. 为 SubAgent 添加专用系统提示词
+
+在 `src/data_agent_baseline/agents/prompt.py` 中：
+
+- 新增 `SUBAGENT_RESPONSE_EXAMPLES`：提供 SubAgent 专用的响应示例
+- 新增 `build_subagent_system_prompt()` 函数：构建包含明确 JSON 格式指导的系统提示词
+- 特别强调 `answer` 工具的正确格式和括号匹配规则
+
+在 `src/data_agent_baseline/agents/subagent.py` 中：
+- 修改 `_build_messages_with_schema` 方法，在第一步时添加系统提示词
+
+#### 3. 添加模型请求重试机制
+
+在 `src/data_agent_baseline/agents/model.py` 中：
+- 为 `OpenAIModelAdapter.complete` 方法添加最多 5 次的重试机制
+- 使用指数退避策略（0.5s, 1s, 1.5s, 2s, 2.5s）避免频繁请求
+- 捕获 `APIError` 和其他异常，记录日志后自动重试
+
+### 修复效果
+
+经过上述修复后：
+- JSON 解析成功率显著提高，即使 LLM 生成格式错误的 JSON，也能自动修复
+- SubAgent 有了明确的格式指导，生成错误 JSON 的概率降低
+- 模型请求失败时自动重试，提高了整体稳定性
+- 多个 task（如 task_27、task_80 等）从反复报错变为能够正常执行
+
+### 相关文件
+
+- `src/data_agent_baseline/agents/parser.py` - JSON 解析和修复逻辑
+- `src/data_agent_baseline/agents/prompt.py` - SubAgent 系统提示词
+- `src/data_agent_baseline/agents/subagent.py` - SubAgent 消息构建
+- `src/data_agent_baseline/agents/model.py` - 模型请求重试机制
+
