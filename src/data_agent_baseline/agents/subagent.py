@@ -209,6 +209,41 @@ class SubAgent:
 
         return mappings
 
+    def _filter_fork_subagent_from_content(self, content: str) -> str:
+        """从内容中过滤掉 fork_subagent 工具描述。
+        
+        Args:
+            content: 原始内容
+            
+        Returns:
+            过滤后的内容
+        """
+        lines = content.split("\n")
+        filtered_lines = []
+        skip_mode = False
+        
+        for line in lines:
+            # 检测 fork_subagent 工具描述的开始
+            if "fork_subagent" in line and ("- fork_subagent:" in line or "name: fork_subagent" in line):
+                skip_mode = True
+                continue
+            
+            # 如果在 skip_mode 中，检测是否到达下一个工具或段落
+            if skip_mode:
+                # 如果遇到新的工具描述（以 "- " 开头且不是缩进的），或者是空行后的新段落
+                if line.strip().startswith("- ") and not line.startswith(" "):
+                    skip_mode = False
+                    filtered_lines.append(line)
+                elif line.strip() == "":
+                    # 保留空行，但继续 skip_mode
+                    continue
+                # 否则继续跳过 fork_subagent 的描述行
+                continue
+            else:
+                filtered_lines.append(line)
+        
+        return "\n".join(filtered_lines)
+
     def _build_messages_with_schema(
         self, task: PublicTask, schema_knowledge: SchemaKnowledge | None
     ) -> list[ModelMessage]:
@@ -236,7 +271,19 @@ class SubAgent:
         else:
             messages = []
         
-        messages.extend(self.inherited_messages.copy())
+        # 过滤 inherited_messages：移除包含 fork_subagent 工具描述的系统提示
+        # 因为 subagent 不应该知道 fork_subagent 工具的存在
+        filtered_inherited = []
+        for msg in self.inherited_messages:
+            if msg.role == "system" and "fork_subagent" in msg.content:
+                # 过滤掉 fork_subagent 相关的工具描述，但保留其他内容
+                filtered_content = self._filter_fork_subagent_from_content(msg.content)
+                if filtered_content:
+                    filtered_inherited.append(ModelMessage(role=msg.role, content=filtered_content))
+            else:
+                filtered_inherited.append(msg)
+        
+        messages.extend(filtered_inherited)
 
         # 构建任务提示词
         task_prompt = build_task_prompt(task)
@@ -283,7 +330,37 @@ class SubAgent:
                 urgency_message = f"\n\n URGENT: You have only {remaining_steps} step(s) remaining out of {self.config.max_steps} total steps. You MUST submit your final answer using the 'answer' tool in the next step(s). If you do not submit an answer within the remaining steps, the task will fail."
                 messages.append(ModelMessage(role="user", content=urgency_message))
 
-            raw_response = await self.model.complete(messages)
+            # 调用模型，捕获可能的连接错误
+            try:
+                raw_response = await self.model.complete(messages)
+            except Exception as model_exc:
+                logger.error(f"Model request failed at step {step_index}: {model_exc}")
+                error_observation = {
+                    "ok": False,
+                    "error": f"Model request failed: {model_exc}",
+                    "message": "The model service is currently unavailable. Please try again or submit an answer with available information.",
+                }
+                step_record = StepRecord(
+                    step_index=step_index,
+                    thought="",
+                    action="error",
+                    action_input={},
+                    raw_response="```json\n{\"thought\": \"Model request failed.\", \"action\": \"error\", \"action_input\": {}}\n```",
+                    observation=error_observation,
+                    ok=False,
+                )
+                self.state.steps.append(step_record)
+                self.state.failure_reason = f"Model request failed: {model_exc}"
+                # 如果是最后一步，返回失败结果
+                if step_index >= self.config.max_steps:
+                    return ForkResult(
+                        subagent_name=self.name,
+                        success=False,
+                        result=None,
+                        steps=list(self.state.steps),
+                    )
+                # 否则继续下一步
+                continue
 
             try:
                 model_step = parse_model_step(raw_response)

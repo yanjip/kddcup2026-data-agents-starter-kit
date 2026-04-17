@@ -18,7 +18,7 @@ Example response when exploring data:
 
 Example response when querying data:
 ```json
-{"thought":"Plan: 1. ✓ Listed files\n2. Now read the relevant CSV file\n3. Filter based on conditions\n\nBlocker: None\n\nI'll read the data file to examine its contents.","action":"read_doc","action_input":{"path": "context/data.csv"}}
+{"thought":"Plan: 1. ✓ Listed files\n2. Now read the relevant CSV file\n3. Filter based on conditions\n\nBlocker: None\n\nI'll read the data file to examine its contents.","action":"read_csv","action_input":{"path": "csv/customers.csv"}}
 ```
 
 Example response for final answer (CORRECT - only requested columns):
@@ -44,6 +44,13 @@ You are a SubAgent responsible for executing specific data analysis sub-tasks.
 2. **Data Exploration**: Use available tools to explore and analyze data
 3. **Tool Usage**: Call appropriate tools to read, filter, and process data
 4. **Result Submission**: Submit your final answer using the `answer` tool
+
+## File Path Rules (CRITICAL)
+
+You inherit the full context from the parent agent, including knowledge of available files.
+- Use paths exactly as shown in the context (e.g., 'knowledge.md', 'doc/budget.md', 'db/cards.db')
+- NEVER prefix paths with 'context/' - the system automatically resolves them relative to the context directory
+- If unsure about file locations, use `list_context` first to verify available files
 
 ## Answer Tool Format
 
@@ -82,12 +89,12 @@ When you have the final result, you MUST use the `answer` tool with this exact J
 ORCHESTRATOR_RESPONSE_EXAMPLES = """
 Example response when forking a sub-agent:
 ```json
-{"thought":"Plan: 1. Explore data structure in parallel using sub-agents\\n2. Combine results for final analysis\\nBlocker: None\\nAssumption: Independent data exploration can happen in parallel\\n\\nI'll fork two sub-agents to explore different aspects of the data.","action":"fork_subagent","action_input":{"task_description":"Explore the customers table schema and sample data","task_context":"List files in context/, read knowledge.md for schema info","expected_output":"Schema details and sample rows from customers table"}}
+{"thought":"Plan: 1. Explore data structure in parallel using sub-agents\\n2. Combine results for final analysis\\nBlocker: None\\nAssumption: Independent data exploration can happen in parallel\\n\\nI'll fork two sub-agents to explore different aspects of the data.","action":"fork_subagent","action_input":{"task_description":"Explore the customers table schema and sample data","task_context":"Available files: knowledge.md, csv/customers.csv. Use these exact paths without 'context/' prefix.","expected_output":"Schema details and sample rows from customers table"}}
 ```
 
 Example response when handling fork result:
 ```json
-{"thought":"Sub-agent 'explorer1' completed successfully. Got schema for customers table.\\nPlan: 1. ✓ Schema exploration\\n2. Query customers table\\n3. Join with orders\\nBlocker: None\\nAssumption: None\\n\\nNow I have the schema, I'll proceed with querying.","action":"read_doc","action_input":{"path":"context/customers.csv"}}
+{"thought":"Sub-agent 'explorer1' completed successfully. Got schema for customers table.\\nPlan: 1. ✓ Schema exploration\\n2. Query customers table\\n3. Join with orders\\nBlocker: None\\nAssumption: None\\n\\nNow I have the schema, I'll proceed with querying.","action":"read_csv","action_input":{"path":"csv/customers.csv"}}
 ```
 
 Example response for final answer:
@@ -153,17 +160,33 @@ The sub-agent will inherit your complete context including:
 - System prompt with tool definitions
 - Full conversation history
 - All tool registrations
+- Knowledge of available files from list_context
+
+### IMPORTANT: File Path Guidance for SubAgents
+
+When forking subagents, ALWAYS include the available files in task_context:
+```json
+{{"thought":"I'll fork a subagent to analyze the database.","action":"fork_subagent","action_input":{{"task_description":"Inspect database schema","task_context":"Available files: knowledge.md, db/cards.db, doc/cards.md. Use these exact paths without 'context/' prefix.","expected_output":"Database schema details"}}}}
+```
 
 {mandatory_subagent_section}
+
+## Handling Knowledge.md and Documentation
+
+The `knowledge.md` file contains CRITICAL information including SQL examples and data definitions. When reading knowledge.md:
+
+1. **Pay special attention to SQL examples** - They show the exact filters and conditions to use
+2. **Follow the SQL examples precisely** - Do not modify filters (e.g., if example shows `Thrombosis = 2`, use exactly that)
+3. **Use `read_doc` to read the content** (note: max_chars default is 4000, use offset parameter for large files)
+4. **Do NOT assume SQLite databases exist** - Check `list_context` first to see what files are actually available
 
 ## Handling Unstructured Data
 
 Some tasks contain data in unstructured formats (e.g., text documents, markdown files) rather than structured databases. When you encounter such tasks:
 
-1. **Use `read_doc` to read the content** of text/markdown files (note: max_chars default is 4000, use offset parameter for large files)
+1. **Use `read_doc` to read the content** of text/markdown files
 2. **Use `execute_python` with regex or string parsing** to extract structured information
-3. **Do NOT assume SQLite databases exist** - Check `list_context` first to see what files are actually available
-4. **For complex parsing tasks**, consider using sub-agents to handle different document types in parallel
+3. **For complex parsing tasks**, consider using sub-agents to handle different document types in parallel
 
 ## Handling Large Documents (CRITICAL)
 
@@ -234,9 +257,12 @@ Before submitting your answer, verify:
 4. Maximum {max_subagents} sub-agents can be active at once
 5. Always call the `answer` tool when you have the final result
 6. Return exactly one JSON object with keys `thought`, `action`, and `action_input`
-7. Always wrap the JSON object in exactly one fenced code block starting with ```json and ending with ```
-8. Do not output any text before or after the fenced JSON block
-9. When returning numerical results in the `answer` tool, use the full precision of the calculated value without rounding or formatting. Do not wrap numbers in quotes.
+7. **CRITICAL**: All tool parameters MUST be inside `action_input` object, NOT at the root level
+   - CORRECT: `{{"action":"execute_context_sql","action_input":{{"path":"db/cards.db","sql":"SELECT..."}}}}`
+   - WRONG: `{{"action":"execute_context_sql","path":"db/cards.db","sql":"SELECT..."}}`
+8. Always wrap the JSON object in exactly one fenced code block starting with ```json and ending with ```
+9. Do not output any text before or after the fenced JSON block
+10. When returning numerical results in the `answer` tool, use the full precision of the calculated value without rounding or formatting. Do not wrap numbers in quotes.
 """.strip()
 
 
@@ -290,4 +316,79 @@ def build_observation_prompt(observation: dict[str, object]) -> str:
     return f"Observation:\n{rendered}"
 
 
+# =============================================================================
+# Verification Agent Prompts
+# =============================================================================
 
+def build_verification_task_prompt(
+    task: PublicTask, 
+    proposed_answer: dict[str, Any],
+    original_reasoning: str = ""
+) -> str:
+    """构建验证任务的提示词"""
+    reasoning_section = f"\n## Original Reasoning\n{original_reasoning}\n" if original_reasoning else ""
+    
+    return f"""## Verification Task
+
+You are verifying if the proposed answer is correct for the given question.
+
+### Original Question
+{task.question}
+
+### Proposed Answer
+Columns: {proposed_answer.get('columns', [])}
+Rows: {proposed_answer.get('rows', [])}
+{reasoning_section}
+### Your Goal
+1. Work backwards from the answer to verify it against the data
+2. Find evidence that supports or contradicts the answer
+3. Return your verification result using the `answer` tool
+
+Use the available tools to explore the data and verify the answer.
+""".strip()
+
+
+def build_verification_observation_prompt(observation: dict[str, object]) -> str:
+    """构建验证Agent的观察提示词"""
+    rendered = json.dumps(observation, ensure_ascii=False, indent=2)
+    return f"Verification Observation:\n{rendered}"
+
+
+def integrate_verification_result(
+    original_prompt: str,
+    verification_result: dict[str, Any]
+) -> str:
+    """
+    将验证结果整合到主Agent的prompt中
+    
+    当验证失败时，使用此函数生成反馈给主Agent的提示
+    """
+    is_valid = verification_result.get('is_valid', False)
+    reasoning = verification_result.get('reasoning', '')
+    suggested_fix = verification_result.get('suggested_fix', '')
+    
+    if is_valid:
+        return original_prompt
+    
+    feedback = f"""
+
+## ⚠️ PREVIOUS ANSWER FAILED VERIFICATION
+
+Your previous answer was rejected by the verification system.
+
+**Reason**: {reasoning}
+"""
+    
+    if suggested_fix:
+        feedback += f"\n**Suggested Fix**: {suggested_fix}\n"
+    
+    feedback += """
+Please reconsider your approach and provide a corrected answer.
+Think about:
+1. Did you use the correct data sources?
+2. Did you interpret the question correctly?
+3. Are there any edge cases you missed?
+
+"""
+    
+    return original_prompt + feedback

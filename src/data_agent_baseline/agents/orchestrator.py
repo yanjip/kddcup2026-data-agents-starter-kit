@@ -15,18 +15,11 @@ from data_agent_baseline.agents.prompt import (
 )
 from data_agent_baseline.agents.runtime import StepRecord
 from data_agent_baseline.agents.subagent import ForkRequest, ForkResult, SubAgent, SubAgentConfig
-from data_agent_baseline.tools.registry import create_default_tool_registry
+from data_agent_baseline.tools.registry import ToolRegistry, create_default_tool_registry
 
 from data_agent_baseline.benchmark.schema import AnswerTable, PublicTask
-from data_agent_baseline.tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass(frozen=True, slots=True)
-class OrchestratorConfig:
-    max_main_steps: int = 8
-    max_subagents: int = 3
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,7 +27,6 @@ class OrchestratorAgentConfig:
     max_main_steps: int
     max_subagent_steps: int
     max_subagents: int
-
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,16 +107,38 @@ class OrchestratorAgent:
         self._subagent_results: dict[str, ForkResult] = {}  # subagent 执行结果
 
     def _build_system_prompt(self, task: PublicTask) -> str:
-        tool_descriptions = self.tools.describe_for_prompt()
+        remaining_slots = self.config.max_subagents - len(self._subagents)
+        tool_descriptions = self._filter_tool_descriptions(self.tools.describe_for_prompt(), remaining_slots)
         system_prompt = build_orchestrator_system_prompt(self.config.max_subagents, task.difficulty)
+        
+        if remaining_slots <= 0:
+            system_prompt += f"\n\n⚠️ IMPORTANT: You have used all {self.config.max_subagents} subagents. fork_subagent is NO LONGER AVAILABLE."
+        
         return (
             f"{system_prompt}\n\n"
             "Available tools:\n"
             f"{tool_descriptions}\n\n"
             f"{ORCHESTRATOR_RESPONSE_EXAMPLES}\n\n"
-            "You must always return a single ```json fenced block containing one JSON object "
-            "with keys `thought`, `action`, and `action_input`, and no extra text."
+            "Return a single ```json fenced block with keys `thought`, `action`, `action_input`."
         )
+
+    def _filter_tool_descriptions(self, descriptions: str, remaining_slots: int) -> str:
+        """当 subagent 槽位已满时，过滤掉 fork_subagent 工具描述"""
+        if remaining_slots > 0:
+            return descriptions
+        
+        lines = descriptions.split("\n")
+        filtered = []
+        skip = False
+        for line in lines:
+            if "fork_subagent" in line and line.strip().startswith("-"):
+                skip = True
+                continue
+            if skip and line.strip().startswith("-") and "fork_subagent" not in line:
+                skip = False
+            if not skip:
+                filtered.append(line)
+        return "\n".join(filtered)
 
     def _build_messages(self, task: PublicTask) -> list[ModelMessage]:
         system_content = self._build_system_prompt(task)
@@ -166,19 +180,13 @@ class OrchestratorAgent:
         )
         self._subagents.append(subagent)
 
-        class SubTask:
-            def __init__(self, desc: str, ctx: str, out: str, task_id: str, context_dir):
-                self.task_id = task_id
-                self.question = f"{desc}\n\nContext: {ctx}\n\nExpected output: {out}"
-                self.context_dir = context_dir
-                self.difficulty = task.difficulty  # 继承原任务难度
-
-        sub_task = SubTask(
-            fork_request.task_description,
-            fork_request.task_context,
-            fork_request.expected_output,
-            f"{task.task_id}_{subagent_name}",
-            task.context_dir
+        # 使用 SimpleNamespace 创建轻量级任务对象
+        from types import SimpleNamespace
+        sub_task = SimpleNamespace(
+            task_id=f"{task.task_id}_{subagent_name}",
+            question=f"{fork_request.task_description}\n\nContext: {fork_request.task_context}\n\nExpected output: {fork_request.expected_output}",
+            context_dir=task.context_dir,
+            difficulty=task.difficulty,
         )
         return await subagent.run(sub_task)
 
@@ -242,6 +250,10 @@ class OrchestratorAgent:
     async def run(self, task: PublicTask) -> OrchestratorRunResult:
         self._state = OrchestratorRuntimeState()
         self._subagents = []
+        
+        # Track if fork_subagent has been used (for hard/extreme tasks)
+        is_hard_or_extreme = task.difficulty.lower() in ("hard", "extreme")
+        fork_subagent_used = False
 
         for step_index in range(1, self.config.max_main_steps + 1):
             # Add urgency reminder when approaching max steps (last 5 steps)
@@ -252,16 +264,79 @@ class OrchestratorAgent:
                 messages.append(ModelMessage(role="user", content=urgency_message))
             else:
                 messages = self._build_messages(task)
-            raw_response = await self.model.complete(messages)
+            
+            # 调用模型，捕获可能的连接错误
+            try:
+                raw_response = await self.model.complete(messages)
+            except Exception as model_exc:
+                logger.error(f"Model request failed at step {step_index}: {model_exc}")
+                error_observation = {
+                    "ok": False,
+                    "error": f"Model request failed: {model_exc}",
+                    "message": "The model service is currently unavailable. Please try again or submit an answer with available information.",
+                }
+                step_record = OrchestratorStepRecord(
+                    step_index=step_index,
+                    thought="",
+                    action="error",
+                    action_input={},
+                    raw_response="",
+                    observation=error_observation,
+                    ok=False,
+                )
+                self._state.steps.append(step_record)
+                # 如果是最后一步，返回失败结果
+                if step_index >= self.config.max_main_steps:
+                    return OrchestratorRunResult(
+                        task_id=task.task_id,
+                        answer=None,
+                        steps=list(self._state.steps),
+                        failure_reason=f"Model request failed: {model_exc}",
+                        subagent_count=len(self._subagents),
+                    )
+                # 否则继续下一步
+                continue
 
             try:
                 model_step = parse_model_step(raw_response)
 
                 # Handle fork_subagent action internally (not through tool registry)
                 if model_step.action == "fork_subagent":
+                    fork_subagent_used = True
                     task_desc = model_step.action_input.get("task_description", "")
                     task_ctx = model_step.action_input.get("task_context", "")
                     expected_out = model_step.action_input.get("expected_output", "")
+
+                    # 检查是否还有剩余的 subagent 槽位
+                    remaining_slots = self.config.max_subagents - len(self._subagents)
+                    
+                    if remaining_slots <= 0:
+                        # 槽位已满，无法创建新 subagent
+                        observation = {
+                            "ok": False,
+                            "tool": "fork_subagent",
+                            "status": "failed",
+                            "message": f"Maximum number of subagents ({self.config.max_subagents}) reached. Cannot create more subagents.",
+                        }
+                        step_record = OrchestratorStepRecord(
+                            step_index=step_index,
+                            thought=model_step.thought,
+                            action=model_step.action,
+                            action_input=model_step.action_input,
+                            raw_response=raw_response,
+                            observation=observation,
+                            ok=False,
+                        )
+                        self._state.steps.append(step_record)
+                        
+                        # 向 LLM 发送明确的提示
+                        failure_message = (
+                            f"\n\n⚠️ SubAgent limit reached: You have used all {self.config.max_subagents} subagents. "
+                            f"You CANNOT fork more subagents. Please use other tools (execute_python, execute_sql, etc.) "
+                            f"to complete the task or submit your answer with current information."
+                        )
+                        messages.append(ModelMessage(role="user", content=failure_message))
+                        continue
 
                     # 收集 subagent 请求，稍后批量并行执行
                     fork_request = ForkRequest(
@@ -272,12 +347,12 @@ class OrchestratorAgent:
                     self._pending_subagent_requests.append(fork_request)
                     logger.info(f"Queued subagent request: {task_desc[:50]}...")
 
-                    # 立即返回一个临时观察，让 LLM 继续发送更多 fork 请求
+                    # 返回排队状态，让 LLM 可以继续 fork 更多 subagent
                     observation = {
                         "ok": True,
                         "tool": "fork_subagent",
                         "status": "queued",
-                        "message": f"Subagent request queued. Total pending: {len(self._pending_subagent_requests)}",
+                        "message": f"Subagent request queued. Total pending: {len(self._pending_subagent_requests)}. Used {len(self._subagents)}/{self.config.max_subagents} subagents.",
                     }
 
                     step_record = OrchestratorStepRecord(
@@ -291,6 +366,61 @@ class OrchestratorAgent:
                     )
                     self._state.steps.append(step_record)
                     continue
+                
+                # Runtime enforcement: hard/extreme tasks MUST use fork_subagent
+                if is_hard_or_extreme and not fork_subagent_used and step_index >= 3:
+                    # Force subagent usage by injecting a reminder and re-trying
+                    logger.warning(f"Hard/extreme task not using fork_subagent at step {step_index}. Injecting mandatory reminder.")
+                    
+                    # Add a forced reminder to the messages
+                    forced_reminder = (
+                        "\n\n⚠️ CRITICAL REMINDER: This is a HARD/EXTREME difficulty task. "
+                        "You MUST use fork_subagent to delegate sub-tasks. "
+                        "You have NOT used any subagent yet. "
+                        "Please fork at least one subagent NOW to proceed with parallel processing. "
+                        "Do NOT attempt to solve this entirely by yourself."
+                    )
+                    messages.append(ModelMessage(role="user", content=forced_reminder))
+                    
+                    # Re-generate response with the reminder
+                    raw_response = await self.model.complete(messages)
+                    try:
+                        model_step = parse_model_step(raw_response)
+                        if model_step.action == "fork_subagent":
+                            fork_subagent_used = True
+                            # Process the fork_subagent action
+                            task_desc = model_step.action_input.get("task_description", "")
+                            task_ctx = model_step.action_input.get("task_context", "")
+                            expected_out = model_step.action_input.get("expected_output", "")
+                            
+                            fork_request = ForkRequest(
+                                task_description=task_desc,
+                                task_context=task_ctx,
+                                expected_output=expected_out
+                            )
+                            self._pending_subagent_requests.append(fork_request)
+                            logger.info(f"Queued subagent request after reminder: {task_desc[:50]}...")
+                            
+                            observation = {
+                                "ok": True,
+                                "tool": "fork_subagent",
+                                "status": "queued",
+                                "message": f"Subagent request queued. Total pending: {len(self._pending_subagent_requests)}",
+                            }
+                            
+                            step_record = OrchestratorStepRecord(
+                                step_index=step_index,
+                                thought=model_step.thought,
+                                action=model_step.action,
+                                action_input=model_step.action_input,
+                                raw_response=raw_response,
+                                observation=observation,
+                                ok=True,
+                            )
+                            self._state.steps.append(step_record)
+                            continue
+                    except Exception as e:
+                        logger.error(f"Failed to parse model response after reminder: {e}")
 
                 # 如果有待执行的 subagent 请求，先并行执行它们
                 if self._pending_subagent_requests and model_step.action != "fork_subagent":
@@ -319,11 +449,25 @@ class OrchestratorAgent:
                             thought=f"[PARALLEL SUBAGENTS] Executed {len(parallel_results)} subagents in parallel",
                             action="parallel_subagents_completed",
                             action_input={},
-                            raw_response="",
+                            raw_response=f'```json\n{{"thought": "Parallel subagents completed execution.", "action": "parallel_subagents_completed", "action_input": {{}}}}\n```',
                             observation=subagent_observation,
                             ok=subagent_observation["ok"],
                         )
                     )
+                    
+                    # 如果 subagent 执行失败，给出明确提示
+                    if not subagent_observation["ok"]:
+                        failure_details = []
+                        for r in parallel_results:
+                            if not r.success and r.error:
+                                failure_details.append(f"{r.subagent_name}: {r.error}")
+                        if failure_details:
+                            failure_message = (
+                                f"\n\n⚠️ Some SubAgents failed:\n" + "\n".join(failure_details) +
+                                f"\n\nYou have used {len(self._subagents)}/{self.config.max_subagents} subagents. "
+                                f"Please use other tools to complete the task or submit your answer with current information."
+                            )
+                            messages.append(ModelMessage(role="user", content=failure_message))
 
                 tool_result = self.tools.execute(task, model_step.action, model_step.action_input)
                 observation = {

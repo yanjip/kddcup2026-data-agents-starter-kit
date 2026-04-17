@@ -208,6 +208,18 @@ def parse_model_step(raw_response: str) -> ModelStep:
     thought = payload.get("thought", "")
     action = payload.get("action")
     action_input = payload.get("action_input", {})
+    
+    # Fix: If action_input is empty but tool-specific params are at root level, move them to action_input
+    if action_input == {} and action and action not in ("thought", "action", "action_input"):
+        # Common tool parameters that should be in action_input
+        tool_params = ["path", "sql", "code", "expression", "max_depth", "max_rows", "max_chars", "limit", "columns", "rows"]
+        extracted_params = {}
+        for param in tool_params:
+            if param in payload:
+                extracted_params[param] = payload[param]
+        if extracted_params:
+            action_input = extracted_params
+    
     if not isinstance(thought, str):
         raise ValueError("thought must be a string.")
     if action is None:

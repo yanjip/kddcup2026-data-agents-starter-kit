@@ -7,7 +7,6 @@ from data_agent_baseline.agents.model import (
 from data_agent_baseline.agents.orchestrator import (
     OrchestratorAgent,
     OrchestratorAgentConfig,
-    OrchestratorConfig,
     OrchestratorRunResult,
     OrchestratorRuntimeState,
     OrchestratorStepRecord,
@@ -41,7 +40,7 @@ __all__ = [
     "ORCHESTRATOR_RESPONSE_EXAMPLES",
     "OrchestratorAgent",
     "OrchestratorAgentConfig",
-    "OrchestratorConfig",
+
     "OrchestratorRunResult",
     "OrchestratorRuntimeState",
     "OrchestratorStepRecord",
