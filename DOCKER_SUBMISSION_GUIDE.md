@@ -190,10 +190,9 @@ docker run --rm \
   -v /home/yjp/data/kdd_data/output:/output:rw \
   -v /home/yjp/data/kdd_data/logs:/logs:rw \
   -e MODEL_API_URL=https://dashscope.aliyuncs.com/compatible-mode/v1 \
-  -e MODEL_API_KEY="sk-c940fe1e2114483eb5bb753a18e5814d" \
+  -e MODEL_API_KEY="sk-xx" \
   -e MODEL_NAME=qwen3.5-35b-a3b \
-  team0042:v2 \
-  run-benchmark --config configs/my_config.yaml --limit 1
+  team0042:v3
 ```
 ### 4.3 命令行参数说明
 
