@@ -14,4 +14,4 @@ COPY . .
 RUN uv build
 
 ENTRYPOINT ["sh", "-c", "uv run dabench \"$@\" 2>&1 | tee /logs/runtime.log", "--"]
-CMD ["--help"]
+CMD ["run-benchmark", "--config", "configs/react_baseline.example.yaml"]
