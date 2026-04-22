@@ -1,5 +1,5 @@
 dataset:
-  root_path: data/public/input
+  root_path: input
 
 agent:
   model: YOUR_MODEL_NAME
