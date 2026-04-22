@@ -59,7 +59,7 @@ kddcup2026-data-agents-starter-kit/
 在项目根目录下创建 `Dockerfile`（无扩展名）：
 
 ```dockerfile
-FROM python:3.11-slim
+FROM python:3.11
 
 WORKDIR /app
 
@@ -80,7 +80,7 @@ CMD ["--help"]
 
 | 指令 | 说明 |
 |------|------|
-| `FROM python:3.11-slim` | 基于轻量级 Python 镜像 |
+| `FROM python:3.11` | 基于标准 Python 镜像 |
 | `WORKDIR /app` | 设置工作目录 |
 | `RUN pip install uv` | 安装 uv 包管理器 |
 | `COPY pyproject.toml ./` | 复制依赖文件 |
@@ -93,14 +93,14 @@ CMD ["--help"]
 如果想减小镜像体积：
 
 ```dockerfile
-FROM python:3.11-slim as builder
+FROM python:3.11 as builder
 
 WORKDIR /app
 RUN pip install uv
 COPY pyproject.toml .
 RUN uv sync --frozen --no-dev
 
-FROM python:3.11-slim
+FROM python:3.11
 
 WORKDIR /app
 COPY --from=builder /app/.venv /app/.venv
@@ -171,19 +171,30 @@ cp -r data/public/input/task_11/* /tmp/eval/input/task_001/
 
 ```bash
 docker run --rm \
-  --network=eval_net \
-  --cpus=4 \
-  --memory=8g \
-  -v /tmp/eval/input:/input:ro \
-  -v /tmp/eval/output:/output:rw \
-  -v /tmp/eval/logs:/logs:rw \
-  -e MODEL_API_URL=http://localhost:8000/v1 \
-  -e MODEL_API_KEY=test_key \
+#   --network=eval_net \
+#   --cpus=4 \
+#   --memory=8g \
+  -v /home/yjp/data/kdd_data/input:/input:ro \
+  -v /home/yjp/data/kdd_data/output:/output:rw \
+  -v /home/yjp/data/kdd_data/logs:/logs:rw \
+  -e MODEL_API_URL=https://dashscope.aliyuncs.com/compatible-mode/v1 \
+  -e MODEL_API_KEY="sk-c940fe1e2114483eb5bb753a18e5814d" \
   -e MODEL_NAME=qwen3.5-35b-a3b \
   team0042:v1 \
   run-benchmark --config configs/react_baseline.example.yaml --limit 1
 ```
 
+```bash
+docker run --rm \
+  -v /home/yjp/data/kdd_data/input:/input:ro \
+  -v /home/yjp/data/kdd_data/output:/output:rw \
+  -v /home/yjp/data/kdd_data/logs:/logs:rw \
+  -e MODEL_API_URL=https://dashscope.aliyuncs.com/compatible-mode/v1 \
+  -e MODEL_API_KEY="sk-c940fe1e2114483eb5bb753a18e5814d" \
+  -e MODEL_NAME=qwen3.5-35b-a3b \
+  team0042:v2 \
+  run-benchmark --config configs/my_config.yaml --limit 1
+```
 ### 4.3 命令行参数说明
 
 | 参数 | 说明 |
@@ -335,10 +346,10 @@ docker build -t team0042:v1 . --progress=plain
 **A:** 使用多阶段构建减少体积：
 
 ```dockerfile
-FROM python:3.11-slim as builder
+FROM python:3.11 as builder
 # ... 构建阶段 ...
 
-FROM python:3.11-slim
+FROM python:3.11
 COPY --from=builder /app /app
 # ... 只复制必要文件 ...
 ```
