@@ -1,4 +1,4 @@
-FROM python:3.11-slim
+FROM python:3.11
 
 WORKDIR /app
 
@@ -13,5 +13,5 @@ COPY . .
 
 RUN uv build
 
-ENTRYPOINT ["uv", "run", "dabench"]
+ENTRYPOINT ["sh", "-c", "uv run dabench \"$@\" 2>&1 | tee /logs/runtime.log", "--"]
 CMD ["--help"]
