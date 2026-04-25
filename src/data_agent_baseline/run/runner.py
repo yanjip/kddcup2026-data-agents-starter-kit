@@ -57,6 +57,11 @@ def resolve_run_id(run_id: str | None = None) -> str:
 
 
 def create_run_output_dir(output_root: Path, *, run_id: str | None = None) -> tuple[str, Path]:
+    # Docker 提交环境：如果输出到 /output 且未指定 run_id，直接输出到 /output 根目录
+    if run_id is None and str(output_root) == "/output":
+        output_root.mkdir(parents=True, exist_ok=True)
+        return "output", output_root
+
     effective_run_id = resolve_run_id(run_id)
     run_output_dir = output_root / effective_run_id
 
@@ -252,9 +257,14 @@ def run_single_task(
     tools: ToolRegistry | None = None,
 ) -> TaskRunArtifacts:
     started_at = perf_counter()
-    # 对于单个任务，直接在主进程中运行（不使用子进程），便于调试和查看日志
-    run_result = _run_single_task_core(task_id=task_id, config=config, model=model, tools=tools)
-    run_result["e2e_elapsed_seconds"] = round(perf_counter() - started_at, 3)
+    try:
+        # 对于单个任务，直接在主进程中运行（不使用子进程），便于调试和查看日志
+        run_result = _run_single_task_core(task_id=task_id, config=config, model=model, tools=tools)
+        run_result["e2e_elapsed_seconds"] = round(perf_counter() - started_at, 3)
+    except Exception:
+        import traceback
+        run_result = _failure_run_result_payload(task_id, traceback.format_exc())
+        run_result["e2e_elapsed_seconds"] = round(perf_counter() - started_at, 3)
     return _write_task_outputs(task_id, run_output_dir, run_result)
 
 
@@ -310,7 +320,17 @@ def run_benchmark(
             }
             indexed_artifacts: list[TaskRunArtifacts | None] = [None] * len(task_ids)
             for future in as_completed(future_to_index):
-                artifact = future.result()
+                try:
+                    artifact = future.result()
+                except Exception:
+                    import traceback
+                    task_index = future_to_index[future]
+                    failed_task_id = task_ids[task_index]
+                    artifact = _write_task_outputs(
+                        failed_task_id,
+                        run_output_dir,
+                        _failure_run_result_payload(failed_task_id, traceback.format_exc()),
+                    )
                 indexed_artifacts[future_to_index[future]] = artifact
                 if progress_callback is not None:
                     progress_callback(artifact)

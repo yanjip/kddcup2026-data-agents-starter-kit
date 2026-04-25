@@ -71,6 +71,7 @@ When you have the final result, you MUST use the `answer` tool with this exact J
 6. Do not output any text before or after the fenced JSON block
 7. When returning numerical results in the `answer` tool, use the full precision without rounding
 8. **CRITICAL**: Before answering, double-check you have not included any extra columns beyond what the task explicitly requests
+9. Keep empty/null values as-is. NEVER substitute missing values with data from other columns.
 """.strip()
 
 
@@ -209,12 +210,16 @@ When dealing with large text/markdown files (>500 lines or >50KB):
 - Use the column names specified in the task or data schema
 - Match the task's terminology exactly (e.g., if task says "expense_type", use "expense_type" not "type")
 
-### 5. Minimal Output Reminder
+### 5. Data Fidelity
+- Keep empty/null values as-is. NEVER substitute them with data from other columns.
+
+### 6. Minimal Output Reminder
 Before submitting your answer, verify:
 - [ ] Did I include ONLY the columns requested in the task?
 - [ ] Did I remove all intermediate calculation columns?
 - [ ] Did I group by the correct column as specified in the task?
 - [ ] Did I use the exact column names from the task description?
+- [ ] Did I keep empty/null values as-is without substituting other fields?
 
 ## Core Rules
 

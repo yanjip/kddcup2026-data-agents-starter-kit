@@ -1,10 +1,10 @@
 dataset:
-  root_path: /input
+  root_path: public/input
 
 agent:
-  model: YOUR_MODEL_NAME
-  api_base: YOUR_API_BASE_URL
-  api_key: YOUR_API_KEY
+  model: qwen3.5-35b-a3b
+  api_base: https://dashscope.aliyuncs.com/compatible-mode/v1 
+  api_key: sk-c940fe1e2114483eb5bb753a18e5814d
   max_steps: 30
   temperature: 0.3
   # Orchestrator agent specific config

@@ -1,0 +1,25 @@
+# Git
+.git/
+.gitignore
+
+# Python virtual environment
+.venv/
+venv/
+
+# Local artifacts (previous run results)
+artifacts/
+
+# Public dataset inputs (mounted at runtime via /input)
+public/input/
+
+# Evaluation & docs
+score/
+*.md
+!README.md
+
+# IDE
+.vscode/
+.idea/
+
+# macOS
+.DS_Store

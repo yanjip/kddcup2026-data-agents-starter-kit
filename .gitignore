@@ -34,7 +34,16 @@ artifacts/*
 # Local configs
 configs/*
 !configs/react_baseline.example.yaml
+!configs/submission.yaml
 
 # OS / notebook noise
 .DS_Store
 .ipynb_checkpoints/
+
+# Submission artifacts
+team1194_v*.tar.gz
+*.tar.gz
+
+# Local data and evaluation results
+public/
+score/
