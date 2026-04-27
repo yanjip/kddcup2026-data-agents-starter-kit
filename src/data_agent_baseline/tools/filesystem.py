@@ -8,7 +8,13 @@ from data_agent_baseline.benchmark.schema import PublicTask
 
 
 def resolve_context_path(task: PublicTask, relative_path: str) -> Path:
-    candidate = (task.context_dir / relative_path).resolve()
+    # LLM 有时会在路径前错误地加上 "context/" 前缀（因为 list_context 返回的 root 包含 context）
+    # 自动去除这个冗余前缀以提高容错性
+    cleaned_path = relative_path
+    while cleaned_path.startswith("context/"):
+        cleaned_path = cleaned_path[len("context/"):]
+
+    candidate = (task.context_dir / cleaned_path).resolve()
     context_root = task.context_dir.resolve()
     if context_root not in candidate.parents and candidate != context_root:
         raise ValueError(f"Path escapes context dir: {relative_path}")

@@ -8,13 +8,13 @@ agent:
   max_steps: 30
   temperature: 0.3
   # Orchestrator agent specific config
-  max_main_steps: 28
-  max_subagent_steps: 18
+  max_main_steps: 30
+  max_subagent_steps: 25
   max_subagents: 4
   enable_verification: false
 
 run:
   output_dir: artifacts/runs
   run_id: example_run_id
-  max_workers: 8
+  max_workers: 4
   task_timeout_seconds: 600

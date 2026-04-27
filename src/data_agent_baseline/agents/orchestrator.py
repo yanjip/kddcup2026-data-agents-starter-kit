@@ -159,9 +159,39 @@ class OrchestratorAgent:
 
         return messages
 
+    def _filter_messages_for_subagent(self, messages: list[ModelMessage]) -> list[ModelMessage]:
+        """过滤消息列表，移除会让 SubAgent 误认自己是主 agent 的内容。
+
+        具体移除：
+        1. Orchestrator 的 system prompt（SubAgent 有自己的 system prompt）
+        2. 所有包含 fork_subagent 调用的历史记录（assistant + 对应 observation）
+        """
+        filtered: list[ModelMessage] = []
+        i = 0
+        while i < len(messages):
+            msg = messages[i]
+            # 跳过 Orchestrator 的 system prompt
+            if msg.role == "system":
+                i += 1
+                continue
+
+            # 如果 assistant 消息包含 fork_subagent，跳过它及对应的 user observation
+            if msg.role == "assistant" and "fork_subagent" in msg.content:
+                i += 1
+                # 跳过对应的 observation（下一个 user 消息）
+                if i < len(messages) and messages[i].role == "user":
+                    i += 1
+                continue
+
+            filtered.append(msg)
+            i += 1
+
+        return filtered
+
     async def _create_subagent(self, task: PublicTask, fork_request: ForkRequest, subagent_name: str) -> ForkResult:
         """创建并运行单个 subagent（异步执行）"""
         inherited_messages = self._build_messages(task)
+        inherited_messages = self._filter_messages_for_subagent(inherited_messages)
 
         # SubAgent 不应该能 fork 其他 subagent，创建不包含 fork_subagent 的工具注册表
         subagent_tools = create_default_tool_registry(include_fork_subagent=False)
@@ -189,7 +219,11 @@ class OrchestratorAgent:
             f"{task.task_id}_{subagent_name}",
             task.context_dir
         )
-        return await subagent.run(sub_task)
+        try:
+            result = await subagent.run(sub_task)
+        finally:
+            self._subagents.remove(subagent)
+        return result
 
     async def _execute_pending_subagents_parallel(self, task: PublicTask) -> list[ForkResult]:
         """并行执行所有待处理的 subagent 请求（使用 asyncio）"""
@@ -337,13 +371,23 @@ class OrchestratorAgent:
                     self._pending_subagent_requests.append(fork_request)
                     logger.info(f"Queued subagent request: {task_desc[:50]}...")
 
-                    # 立即返回一个临时观察，让 LLM 继续发送更多 fork 请求
-                    observation = {
-                        "ok": True,
-                        "tool": "fork_subagent",
-                        "status": "queued",
-                        "message": f"Subagent request queued. Total pending: {len(self._pending_subagent_requests)}",
-                    }
+                    is_knowledge_reader = "knowledge.md" in task_desc.lower()
+
+                    if is_knowledge_reader:
+                        observation = {
+                            "ok": True,
+                            "tool": "fork_subagent",
+                            "status": "executing",
+                            "message": "Knowledge.md reader subagent is executing. Results will be available in the next step.",
+                        }
+                    else:
+                        # 立即返回一个临时观察，让 LLM 继续发送更多 fork 请求
+                        observation = {
+                            "ok": True,
+                            "tool": "fork_subagent",
+                            "status": "queued",
+                            "message": f"Subagent request queued. Total pending: {len(self._pending_subagent_requests)}",
+                        }
 
                     step_record = OrchestratorStepRecord(
                         step_index=step_index,
@@ -355,6 +399,39 @@ class OrchestratorAgent:
                         ok=True,
                     )
                     self._state.steps.append(step_record)
+
+                    # 如果是 knowledge.md reader，立即执行并等待结果
+                    if is_knowledge_reader and self._pending_subagent_requests:
+                        logger.info("Executing knowledge.md reader immediately")
+                        parallel_results = await self._execute_pending_subagents_parallel(task)
+
+                        subagent_observation = {
+                            "ok": all(r.success for r in parallel_results),
+                            "tool": "parallel_subagents_completed",
+                            "subagent_count": len(parallel_results),
+                            "successful_count": sum(1 for r in parallel_results if r.success),
+                            "results": [
+                                {
+                                    "subagent_name": r.subagent_name,
+                                    "success": r.success,
+                                    "result": str(r.result) if r.result else None,
+                                    "error": r.error,
+                                }
+                                for r in parallel_results
+                            ],
+                        }
+                        self._state.steps.append(
+                            OrchestratorStepRecord(
+                                step_index=step_index,
+                                thought=f"[PARALLEL SUBAGENTS] Executed {len(parallel_results)} subagents in parallel",
+                                action="parallel_subagents_completed",
+                                action_input={},
+                                raw_response="",
+                                observation=subagent_observation,
+                                ok=subagent_observation["ok"],
+                            )
+                        )
+
                     continue
 
                 # 如果有待执行的 subagent 请求，先并行执行它们

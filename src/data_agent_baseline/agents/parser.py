@@ -39,7 +39,13 @@ def _sanitize_json_string(text: str) -> str:
     
     for char in text:
         if escape_next:
-            result.append(char)
+            if char in '"\\/bfnrtu':
+                result.append(char)
+            else:
+                # 非法 JSON 转义序列（如 \s, \d, \w 等），将反斜杠双写
+                # 这样 JSON 解析后得到原始的 \s, \d 等，保持原意
+                result.append('\\')
+                result.append(char)
             escape_next = False
             continue
             
@@ -88,41 +94,44 @@ def _fix_common_json_errors(text: str) -> str:
     open_brackets = text.count('[')
     close_brackets = text.count(']')
     
+    missing_brackets = open_brackets - close_brackets
+    extra_braces = close_braces - open_braces
+    
     # 修复方括号不匹配问题
-    # 找到应该用 ] 但用了 } 的位置
-    if close_brackets < open_brackets and close_braces > open_braces:
-        # 这种情况说明有 } 被错误地用来替代了 ]
-        # 我们需要找到最左边的那个多余的 }（在数组值后面）
-        missing = open_brackets - close_brackets
-        extra_braces = close_braces - open_braces
-        
-        # 从左向右查找，找到第一个在数组上下文中的多余 }
-        # 通常这是在 rows 值后面的那个 }
-        chars = list(text)
-        bracket_depth = 0
-        brace_depth = 0
-        replaced = 0
-        
-        for i, char in enumerate(chars):
-            if char == '[':
-                bracket_depth += 1
-            elif char == ']':
-                bracket_depth -= 1
-            elif char == '{':
-                brace_depth += 1
-            elif char == '}':
-                # 如果在方括号深度 > 0 的情况下遇到 }，这可能是错误
-                if bracket_depth > 0 and replaced < missing and replaced < extra_braces:
-                    chars[i] = ']'
-                    bracket_depth -= 1
-                    replaced += 1
-                else:
-                    brace_depth -= 1
-        
-        text = ''.join(chars)
-    elif close_brackets < open_brackets:
-        # 单纯缺少闭合方括号，在末尾补充
-        text += ']' * (open_brackets - close_brackets)
+    if missing_brackets > 0:
+        best_candidate = None
+        # 从右向左尝试在 } 或 ] 前面插入 missing 个 ]，找到第一个能解析成功的
+        for insert_pos in range(len(text) - 1, -1, -1):
+            if text[insert_pos] in '}]':
+                candidate = text[:insert_pos] + ']' * missing_brackets + text[insert_pos:]
+                try:
+                    json.loads(candidate)
+                    best_candidate = candidate
+                    break
+                except json.JSONDecodeError:
+                    continue
+        if best_candidate:
+            text = best_candidate
+        else:
+            # 如果简单插入不行，且同时有多余的 }，尝试将 } 替换为 ]
+            if extra_braces > 0:
+                replacement_count = min(missing_brackets, extra_braces)
+                for replace_pos in range(len(text) - 1, -1, -1):
+                    if text[replace_pos] == '}':
+                        candidate = text[:replace_pos] + ']' + text[replace_pos + 1:]
+                        try:
+                            json.loads(candidate)
+                            text = candidate
+                            missing_brackets -= 1
+                            extra_braces -= 1
+                            replacement_count -= 1
+                            if replacement_count <= 0:
+                                break
+                        except json.JSONDecodeError:
+                            continue
+            # 如果替换也失败，fallback 到末尾追加
+            if missing_brackets > 0:
+                text += ']' * missing_brackets
     
     # 重新统计，修复花括号不匹配问题
     open_braces = text.count('{')

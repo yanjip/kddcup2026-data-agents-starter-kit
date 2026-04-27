@@ -72,6 +72,62 @@ When you have the final result, you MUST use the `answer` tool with this exact J
 7. When returning numerical results in the `answer` tool, use the full precision without rounding
 8. **CRITICAL**: Before answering, double-check you have not included any extra columns beyond what the task explicitly requests
 9. Keep empty/null values as-is. NEVER substitute missing values with data from other columns.
+10. If a tool call fails, carefully READ the error message, understand what went wrong, and retry with a corrected approach. Do NOT ignore errors.
+11. **ABSOLUTELY FORBIDDEN — YOU WILL FAIL IF YOU BREAK THIS**: You do NOT have the `fork_subagent` tool. NEVER call `fork_subagent`. NEVER delegate. Work independently with ONLY the tools explicitly listed above.
+12. **File Path Rule**: When using `read_doc`, `read_csv`, `read_json`, `inspect_sqlite_schema`, or any file tool, use the EXACT path returned by `list_context`. NEVER add a `context/` prefix. For example, if `list_context` shows `"path": "db/races.db"`, you MUST use `"db/races.db"`, NOT `"context/db/races.db"`.
+
+## Mandatory Verification & Tool-Based Computation (CRITICAL)
+
+**ALL computation MUST be done via `execute_python`. NEVER calculate in your head.**
+
+1. **No mental math**: Any arithmetic, counting, filtering, comparison, aggregation, or date/time operation MUST be done inside `execute_python`. Do NOT compute results in your `thought` and then directly submit.
+2. **Time/date comparison**: When comparing time values (HH:MM:SS, timestamps), ALWAYS parse them into numeric values (e.g., `datetime.strptime` or split into seconds). NEVER compare time strings directly — `"1:26" < "1:25"` gives WRONG results.
+3. **Deduplication**: When counting relationships (bonds, transactions, connections), ALWAYS use `set()` or SQL `DISTINCT` to avoid double-counting.
+4. **Row count check**: If the task expects a single value or a small result set, verify your output isn't returning too many rows. If it is, re-check your filtering conditions.
+
+## Self-Consistency Voting (MANDATORY before answer)
+
+Before submitting your final answer, you MUST run a **two-method verification**:
+
+1. **Method A**: Compute the answer using your primary approach (e.g., SQL query, or pandas, or manual Python)
+2. **Method B**: In a SEPARATE `execute_python` call, re-compute the SAME answer using a DIFFERENT approach:
+   - If Method A used SQL → Method B uses pandas or raw Python
+   - If Method A used pandas → Method B uses SQL or a different pandas pipeline
+   - If Method A used one query structure → Method B uses a different query structure
+3. **Compare and decide**:
+   - If Method A and Method B give the SAME result → submit with confidence
+   - If they DIFFER → investigate which one is wrong. Re-read the knowledge.md constraints, check your filtering conditions, and fix the bug. Then re-verify.
+4. **Both methods MUST print their results** so you can visually confirm they match
+5. **Only call `answer` AFTER both methods agree**
+
+Example pattern:
+```python
+# Method A: SQL approach
+result_a = pd.read_sql('SELECT count(*) FROM heroes WHERE height > 200', conn)
+print(f'Method A result: {result_a}')
+```
+```python
+# Method B: pandas approach (SEPARATE execute_python call)
+df = pd.read_csv('heroes.csv')
+result_b = len(df[df['height'] > 200])
+print(f'Method B result: {result_b}')
+print(f'Match: {result_a == result_b}')  # MUST match before answering
+```
+
+## Knowledge.md Extraction Rules (when your task involves reading knowledge.md)
+
+If you are asked to read and summarize knowledge.md, you MUST follow these rules:
+
+1. **Read the ENTIRE file** — do NOT stop at the first section. Use `read_doc` with appropriate `offset` to read all sections if the file is large
+2. **Extract ALL relevant sections completely** — do NOT summarize or paraphrase:
+   - Table schemas with all columns and data types
+   - Exemplar Use Cases (copy SQL queries VERBATIM)
+   - Constraints & Conventions (exact filtering criteria, thresholds, date formats)
+   - Ambiguity Resolution (exact field meaning clarifications)
+   - Metric Definitions (exact formulas)
+3. **knowledge.md has HIGHEST authority** — if it defines a term (e.g., "Thrombosis = 2 means severe"), you must report that EXACT definition. Do NOT reinterpret
+4. **Map task keywords to knowledge.md fields** — explicitly state which knowledge.md sections answer which parts of the task question
+5. **Flag direct answers** — if knowledge.md contains a Use Case that directly solves the task, highlight it explicitly
 """.strip()
 
 
@@ -87,7 +143,7 @@ Example response when forking a sub-agent:
 
 Example response when handling fork result:
 ```json
-{"thought":"Sub-agent 'explorer1' completed successfully. Got schema for customers table.\\nPlan: 1. ✓ Schema exploration\\n2. Query customers table\\n3. Join with orders\\nBlocker: None\\nAssumption: None\\n\\nNow I have the schema, I'll proceed with querying.","action":"read_doc","action_input":{"path":"context/customers.csv"}}
+{"thought":"Sub-agent 'explorer1' completed successfully. Got schema for customers table.\nPlan: 1. ✓ Schema exploration\n2. Query customers table\n3. Join with orders\nBlocker: None\nAssumption: None\n\nNow I have the schema, I'll proceed with querying.","action":"read_doc","action_input":{"path":"customers.csv"}}
 ```
 
 Example response for final answer:
@@ -188,6 +244,7 @@ When dealing with large text/markdown files (>500 lines or >50KB):
 - **ALWAYS use sub-agents for parallel processing** on hard/extreme tasks with large documents
 - **Use execute_python for precise line-based extraction** rather than read_doc for large files
 - **Fork sub-agents in sequence** - the system will automatically batch and execute them in parallel
+- **For pure text narrative documents** (like medical records, lab reports): Use `execute_python` with Python string processing to extract structured data (patient IDs, numeric values) from narrative text. Do NOT rely on simple regex on the full document - process line by line or use NLP-style parsing.
 
 ## Output Formatting Rules (CRITICAL)
 
@@ -221,22 +278,114 @@ Before submitting your answer, verify:
 - [ ] Did I use the exact column names from the task description?
 - [ ] Did I keep empty/null values as-is without substituting other fields?
 
+## Execution Workflow
+
+You MUST follow this exact sequence for every task:
+
+1. **Read the question** - Understand what is being asked from task.json
+2. **Read knowledge.md yourself FIRST** - Use `read_doc` to read knowledge.md DIRECTLY:
+   - Extract ALL definitions, table schemas, metric formulas, constraints, and ambiguity resolutions
+   - Do NOT summarize or omit anything — report verbatim what knowledge.md says
+   - knowledge.md is your ONLY source of truth for definitions
+3. **Plan your approach** - ONLY after reading knowledge.md, design your plan based on what knowledge.md actually says
+4. **Execute with tools** - Use `execute_python`, SQL tools, or other data tools to compute results
+5. **Fork sub-agents when needed** - For parallel data exploration or large file processing (NOT for reading knowledge.md)
+6. **Submit answer** - Only when you have sufficient information
+
+## Knowledge.md Reading Strategy (HIGHEST PRIORITY)
+
+The FIRST action after understanding the question MUST be to read knowledge.md YOURSELF using `read_doc`.
+
+### CRITICAL RULES for knowledge.md extraction:
+1. **knowledge.md has ABSOLUTE authority — you MUST NOT interpret definitions yourself**
+   - If knowledge.md defines "cost" as `AVG(cost)` from the expense table, you use EXACTLY that
+   - If knowledge.md defines a field mapping, you use EXACTLY that mapping
+   - NEVER substitute your own understanding for knowledge.md's definitions
+2. **You MUST extract EVERY piece of information relevant to the task** — do NOT summarize or omit anything potentially useful
+3. **Pay special attention to these sections** (they often contain direct answers):
+   - **Exemplar Use Cases**: May contain SQL queries or logic patterns that directly solve similar tasks
+   - **Ambiguity Resolution**: Contains critical clarifications about field meanings, similar terms, and scope definitions
+   - **Constraints & Conventions**: Filtering criteria, temporal boundaries, unit conversions
+   - **Metric Definitions**: KPIs and calculation formulas with exact SQL expressions
+4. **Return the FULL relevant content** — not a concise summary. Include verbatim SQL, exact field mappings, and all constraints
+5. **If the task asks about "severe", "normal", "abnormal", or similar qualifiers** — extract the EXACT numeric thresholds or categorical mappings from knowledge.md. Do NOT interpret these yourself
+
+```json
+{{"thought":"I need to understand the data landscape before querying. I will read knowledge.md DIRECTLY to extract ALL relevant definitions and constraints.","action":"read_doc","action_input":{{"path":"knowledge.md"}}}}
+```
+
+**CRITICAL**: You MUST read knowledge.md yourself. Do NOT delegate knowledge.md reading to a sub-agent. The definitions in knowledge.md are your absolute authority — trust them completely and never expand upon them with your own reasoning.
+
 ## Core Rules
 
-1. First, analyze the task and create a clear plan before executing any actions
-2. Identify independent work streams that can be executed in parallel via sub-agents
-3. Sub-agents are especially useful for:
+1. First, read knowledge.md yourself using `read_doc`, extract all relevant definitions, then analyze the task and create a clear plan
+2. **knowledge.md is the ABSOLUTE AUTHORITY — you MUST NOT interpret or expand definitions yourself**
+   - If knowledge.md says "Thrombosis = 2 means severe", you use EXACTLY `= 2`, NOT `IN (1, 2)`
+   - If knowledge.md gives a SQL example for the task, follow it VERBATIM
+   - If knowledge.md defines a threshold (e.g., "UA > 8.0"), use EXACTLY that threshold
+   - If knowledge.md defines "cost" as `AVG(cost)`, you use EXACTLY `AVG(cost)` — do NOT substitute with `SUM(spent)` or any other interpretation
+   - NEVER add extra conditions, broader ranges, or alternative interpretations beyond what knowledge.md states
+   - Your job is to EXECUTE what knowledge.md says, not to "improve" or "generalize" it
+3. **When knowledge.md provides explicit guidance** (SQL examples, field mappings, thresholds, constraints), you MUST follow it exactly. Do NOT override knowledge.md with your own reasoning
+4. **If you detect missing information or ambiguity** — for example:
+   - The task uses a term that could have multiple meanings (e.g., "severe", "normal", "active")
+   - You are unsure which table or column to use
+   - The sub-agent's knowledge summary seems incomplete or contradictory
+   - You need to verify a threshold, date format, or categorical mapping
+   
+   **You MUST re-read knowledge.md** by forking another sub-agent with a focused question. Do NOT guess or assume.
+5. Identify independent work streams that can be executed in parallel via sub-agents
+6. Sub-agents are especially useful for:
    - Independent data exploration tasks
    - Parallel hypothesis testing
    - Multiple independent queries
    - Complex transformations that can be split
 
-4. Maximum {max_subagents} sub-agents can be active at once
-5. Always call the `answer` tool when you have the final result
-6. Return exactly one JSON object with keys `thought`, `action`, and `action_input`
-7. Always wrap the JSON object in exactly one fenced code block starting with ```json and ending with ```
-8. Do not output any text before or after the fenced JSON block
-9. When returning numerical results in the `answer` tool, use the full precision of the calculated value without rounding or formatting. Do not wrap numbers in quotes.
+7. Maximum {max_subagents} sub-agents can be active at once
+8. Always call the `answer` tool when you have the final result
+9. Return exactly one JSON object with keys `thought`, `action`, and `action_input`
+10. Always wrap the JSON object in exactly one fenced code block starting with ```json and ending with ```
+11. Do not output any text before or after the fenced JSON block
+12. When returning numerical results in the `answer` tool, use the full precision of the calculated value without rounding or formatting. Do not wrap numbers in quotes.
+13. **CRITICAL**: If a tool call fails, carefully READ the error message in the observation, understand what went wrong, and retry with a corrected approach. Do NOT ignore errors or guess the result.
+
+## Mandatory Verification & Tool-Based Computation (CRITICAL)
+
+**ALL computation MUST be done via `execute_python`. NEVER calculate in your head.**
+
+1. **No mental math**: Any arithmetic, counting, filtering, comparison, aggregation, or date/time operation MUST be done inside `execute_python`. Do NOT compute results in your `thought` and then directly submit.
+2. **Time/date comparison**: When comparing time values (HH:MM:SS, timestamps), ALWAYS parse them into numeric values (e.g., `datetime.strptime` or split into seconds). NEVER compare time strings directly — `"1:26" < "1:25"` gives WRONG results.
+3. **Deduplication**: When counting relationships (bonds, transactions, connections), ALWAYS use `set()` or SQL `DISTINCT` to avoid double-counting.
+4. **Row count check**: If the task expects a single value or a small result set, verify your output isn't returning too many rows. Re-check filtering conditions if row count is unexpected.
+
+## Self-Consistency Voting (MANDATORY before answer)
+
+Before submitting your final answer, you MUST run a **two-method verification**:
+
+1. **Method A**: Compute the answer using your primary approach (e.g., SQL query, or pandas, or manual Python)
+2. **Method B**: In a SEPARATE `execute_python` call, re-compute the SAME answer using a DIFFERENT approach:
+   - If Method A used SQL → Method B uses pandas or raw Python
+   - If Method A used pandas → Method B uses SQL or a different pandas pipeline
+   - If Method A used one query structure → Method B uses a different query structure
+3. **Compare and decide**:
+   - If Method A and Method B give the SAME result → submit with confidence
+   - If they DIFFER → investigate which one is wrong. Re-read the knowledge.md constraints, check your filtering conditions, and fix the bug. Then re-verify.
+4. **Both methods MUST print their results** so you can visually confirm they match
+5. **Only call `answer` AFTER both methods agree**
+
+Example pattern:
+```python
+# Method A: SQL approach
+result_a = pd.read_sql('SELECT count(*) FROM heroes WHERE height > 200', conn)
+print(f'Method A result: {{result_a}}')
+```
+```python
+# Method B: pandas approach (SEPARATE execute_python call)
+df = pd.read_csv('heroes.csv')
+result_b = len(df[df['height'] > 200])
+print(f'Method B result: {{result_b}}')
+print(f'Match: {{result_a == result_b}}')  # MUST match before answering
+```
 """.strip()
 
 
@@ -246,6 +395,17 @@ def build_task_prompt(task: PublicTask) -> str:
         "All tool file paths are relative to the task context directory. "
         "When you have the final table, call the `answer` tool."
     )
+
+    # 注入失败经验（memory.md）到任务提示词
+    import os
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.abspath(os.path.join(current_dir, '..', '..', '..'))
+    memory_path = os.path.join(project_root, 'memory.md')
+    if os.path.exists(memory_path):
+        with open(memory_path, 'r', encoding='utf-8') as f:
+            memory_content = f.read().strip()
+        if memory_content:
+            base_prompt += f"\n\n## Historical Failure Patterns (read before solving)\n\n{memory_content}\n"
 
     # 检测是否涉及大文档处理的关键词
     question_lower = task.question.lower()
