@@ -226,6 +226,18 @@ def parse_model_step(raw_response: str) -> ModelStep:
     if not isinstance(action_input, dict):
         raise ValueError("action_input must be a JSON object.")
 
+    # ---- Tolerance fix: move stray tool params into action_input ----
+    # LLM sometimes puts tool parameters (code, path, sql, max_depth, etc.)
+    # at the top level instead of inside action_input.
+    # e.g. {"action":"execute_python","code":"..."} instead of
+    #      {"action":"execute_python","action_input":{"code":"..."}}
+    _reserved_keys = {"thought", "action", "action_input"}
+    stray_keys = {k: v for k, v in payload.items() if k not in _reserved_keys}
+    if stray_keys:
+        for k, v in stray_keys.items():
+            if k not in action_input:  # don't overwrite explicit action_input keys
+                action_input[k] = v
+
     return ModelStep(
         thought=thought,
         action=action,

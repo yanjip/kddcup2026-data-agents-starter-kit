@@ -85,6 +85,54 @@ When you have the final result, you MUST use the `answer` tool with this exact J
 3. **Deduplication**: When counting relationships (bonds, transactions, connections), ALWAYS use `set()` or SQL `DISTINCT` to avoid double-counting.
 4. **Row count check**: If the task expects a single value or a small result set, verify your output isn't returning too many rows. If it is, re-check your filtering conditions.
 
+## SQL Query Logic Safeguards (CRITICAL — most common failure source)
+
+### 1. AND vs OR — "X and Y" means BOTH must be true
+- When the question says "have X **and** Y", it means BOTH conditions on the SAME entity
+- Example: "bonds that have phosphorus **and** nitrogen" → the bond must connect BOTH a phosphorus atom AND a nitrogen atom
+- WRONG: `WHERE element = 'p' OR element = 'n'` (this finds bonds with EITHER)
+- RIGHT: Use a self-join, subquery, or GROUP BY/HAVING to ensure BOTH conditions hold on the same bond
+- **Rule**: If the question uses "and" between two filter values of the SAME column, you almost certainly need a JOIN or HAVING COUNT >= 2 pattern
+
+### 2. Aggregation Sanity Check — verify order of magnitude
+- After computing any AVG, SUM, COUNT, or ratio, ALWAYS print the intermediate values and do a sanity check:
+  - Is the average monthly consumption a reasonable number per customer (not millions)?
+  - Is the percentage between 0 and 100?
+  - Is the count within a plausible range given the dataset size?
+- **Rule**: `print(f'Result: {value}, Sanity: value_range_check')` before submitting
+- Common trap: forgetting to divide by the correct denominator (e.g., total consumption / 12 months / N customers, not just / 12)
+
+### 3. Percentage and Ratio — always clarify numerator and denominator
+- Before calculating, explicitly write out: `numerator = ???, denominator = ???`
+- Print BOTH values separately before dividing
+- "How many times is A compared to B" → A / B (not B / A)
+- "How much faster in percentage" → carefully determine the base: is it (fast - slow) / slow * 100 or (fast - slow) / fast * 100? Re-read the question
+- **Rule**: ALWAYS print numerator and denominator separately, then the ratio
+
+### 4. NULL Preservation in JOINs
+- When the question says "List the names AND funding types", some records may have NULL funding type — they MUST still appear in results
+- Use LEFT JOIN (not INNER JOIN) when the question asks to "list" or "show" entities that may lack some attributes
+- **Rule**: If the question asks to LIST items with optional attributes, use LEFT JOIN and keep NULLs
+
+### 5. Ranking and "Nth" Queries — verify with context
+- When finding "the driver who ranked 2nd" or "the comment with the highest score", ALWAYS:
+  1. First print the TOP 5 results with their ranking values
+  2. Verify the correct row is selected
+  3. Check if there are ties
+- **Rule**: Never blindly take `LIMIT 1 OFFSET N` without printing surrounding rows to verify
+
+### 6. Threshold Lookups — NEVER guess medical/domain thresholds
+- Words like "normal", "abnormal", "severe", "high", "low" ALWAYS have specific numeric definitions in knowledge.md
+- You MUST look up the EXACT threshold from knowledge.md before writing any filter
+- WRONG: Guessing that "normal white blood cells" means WBC between 4000-10000
+- RIGHT: Read knowledge.md, find the exact definition, use that exact value
+- **Rule**: For ANY domain-specific qualifier, extract the definition from knowledge.md FIRST, then query
+
+### 7. "Lowest/Highest" with Ties
+- When a question asks "which X has the lowest Y", there may be MULTIPLE Xs tied at the lowest value
+- ALWAYS check: `SELECT Y, COUNT(*) FROM table GROUP BY Y ORDER BY Y LIMIT 3` to see if there are ties
+- Return ALL tied results, not just one
+
 ## Self-Consistency Voting (MANDATORY before answer)
 
 Before submitting your final answer, you MUST run a **two-method verification**:
@@ -357,6 +405,54 @@ The FIRST action after understanding the question MUST be to read knowledge.md Y
 2. **Time/date comparison**: When comparing time values (HH:MM:SS, timestamps), ALWAYS parse them into numeric values (e.g., `datetime.strptime` or split into seconds). NEVER compare time strings directly — `"1:26" < "1:25"` gives WRONG results.
 3. **Deduplication**: When counting relationships (bonds, transactions, connections), ALWAYS use `set()` or SQL `DISTINCT` to avoid double-counting.
 4. **Row count check**: If the task expects a single value or a small result set, verify your output isn't returning too many rows. Re-check filtering conditions if row count is unexpected.
+
+## SQL Query Logic Safeguards (CRITICAL — most common failure source)
+
+### 1. AND vs OR — "X and Y" means BOTH must be true
+- When the question says "have X **and** Y", it means BOTH conditions on the SAME entity
+- Example: "bonds that have phosphorus **and** nitrogen" → the bond must connect BOTH a phosphorus atom AND a nitrogen atom
+- WRONG: `WHERE element = 'p' OR element = 'n'` (this finds bonds with EITHER)
+- RIGHT: Use a self-join, subquery, or GROUP BY/HAVING to ensure BOTH conditions hold on the same bond
+- **Rule**: If the question uses "and" between two filter values of the SAME column, you almost certainly need a JOIN or HAVING COUNT >= 2 pattern
+
+### 2. Aggregation Sanity Check — verify order of magnitude
+- After computing any AVG, SUM, COUNT, or ratio, ALWAYS print the intermediate values and do a sanity check:
+  - Is the average monthly consumption a reasonable number per customer (not millions)?
+  - Is the percentage between 0 and 100?
+  - Is the count within a plausible range given the dataset size?
+- **Rule**: `print(f'Result: {{value}}, Sanity: value_range_check')` before submitting
+- Common trap: forgetting to divide by the correct denominator (e.g., total consumption / 12 months / N customers, not just / 12)
+
+### 3. Percentage and Ratio — always clarify numerator and denominator
+- Before calculating, explicitly write out: `numerator = ???, denominator = ???`
+- Print BOTH values separately before dividing
+- "How many times is A compared to B" → A / B (not B / A)
+- "How much faster in percentage" → carefully determine the base: is it (fast - slow) / slow * 100 or (fast - slow) / fast * 100? Re-read the question
+- **Rule**: ALWAYS print numerator and denominator separately, then the ratio
+
+### 4. NULL Preservation in JOINs
+- When the question says "List the names AND funding types", some records may have NULL funding type — they MUST still appear in results
+- Use LEFT JOIN (not INNER JOIN) when the question asks to "list" or "show" entities that may lack some attributes
+- **Rule**: If the question asks to LIST items with optional attributes, use LEFT JOIN and keep NULLs
+
+### 5. Ranking and "Nth" Queries — verify with context
+- When finding "the driver who ranked 2nd" or "the comment with the highest score", ALWAYS:
+  1. First print the TOP 5 results with their ranking values
+  2. Verify the correct row is selected
+  3. Check if there are ties
+- **Rule**: Never blindly take `LIMIT 1 OFFSET N` without printing surrounding rows to verify
+
+### 6. Threshold Lookups — NEVER guess medical/domain thresholds
+- Words like "normal", "abnormal", "severe", "high", "low" ALWAYS have specific numeric definitions in knowledge.md
+- You MUST look up the EXACT threshold from knowledge.md before writing any filter
+- WRONG: Guessing that "normal white blood cells" means WBC between 4000-10000
+- RIGHT: Read knowledge.md, find the exact definition, use that exact value
+- **Rule**: For ANY domain-specific qualifier, extract the definition from knowledge.md FIRST, then query
+
+### 7. "Lowest/Highest" with Ties
+- When a question asks "which X has the lowest Y", there may be MULTIPLE Xs tied at the lowest value
+- ALWAYS check: `SELECT Y, COUNT(*) FROM table GROUP BY Y ORDER BY Y LIMIT 3` to see if there are ties
+- Return ALL tied results, not just one
 
 ## Self-Consistency Voting (MANDATORY before answer)
 

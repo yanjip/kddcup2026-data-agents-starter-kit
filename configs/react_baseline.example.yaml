@@ -9,7 +9,7 @@ agent:
   temperature: 0.3
   # Orchestrator agent specific config
   max_main_steps: 30
-  max_subagent_steps: 25
+  max_subagent_steps: 30
   max_subagents: 4
   enable_verification: false
 

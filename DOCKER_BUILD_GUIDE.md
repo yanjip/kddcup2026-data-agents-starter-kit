@@ -28,7 +28,7 @@ docker info
 ```bash
 cd /Users/caramel/kddcup2026-data-agents-starter-kit
 
-docker build -t team1194:v1 .
+docker build --platform linux/amd64 -t team1194:v1 .
 ```
 
 > 将 `team1194` 替换为你的 Team ID，`v1` 替换为版本号（v1, v2, v3...）
@@ -175,3 +175,15 @@ docker info
 ### Q: 输出目录为空
 
 已修复 `runner.py` 的异常捕获，任务失败时会写入 `trace.json` 和失败原因，不会导致 benchmark 崩溃。
+
+### Q: 提交后报 `platform (linux/arm64) does not match detected host platform`
+
+原因：Mac（Apple Silicon）默认构建 arm64 镜像，但评测服务器是 amd64（x86_64）。
+
+解决：构建时指定平台：
+
+```bash
+docker build --platform linux/amd64 -t team1194:v1 .
+```
+
+> 需要 Docker Desktop 开启 **Rosetta** 或 **Virtualization framework** 支持。可在 Docker Desktop → Settings → Features → 勾选 "Use Rosetta for x86/amd64 emulation"。
