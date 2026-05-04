@@ -72,7 +72,7 @@ docker run --rm \
   -v /tmp/team1194_output:/output:rw \
   -v /tmp/team1194_logs:/logs:rw \
   -e MODEL_API_URL=https://dashscope.aliyuncs.com/compatible-mode/v1 \
-  -e MODEL_API_KEY=sk-c940fe1e2114483eb5bb753a18e5814d \
+  -e MODEL_API_KEY=xx \
   -e MODEL_NAME=qwen3.5-35b-a3b \
   team1194:v1 \
   run-benchmark --config configs/submission.yaml --limit 1
