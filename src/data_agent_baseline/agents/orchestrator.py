@@ -107,7 +107,7 @@ class OrchestratorAgent:
         self._subagent_results: dict[str, ForkResult] = {}  # subagent 执行结果
 
     def _build_system_prompt(self, task: PublicTask) -> str:
-        remaining_slots = self.config.max_subagents - len(self._subagents)
+        remaining_slots = self.config.max_subagents - len(self._subagents) - len(self._pending_subagent_requests)
         tool_descriptions = self._filter_tool_descriptions(self.tools.describe_for_prompt(), remaining_slots)
         system_prompt = build_orchestrator_system_prompt(self.config.max_subagents, task.difficulty)
         
@@ -152,14 +152,21 @@ class OrchestratorAgent:
             )
 
         if self._subagents:
-            subagent_context = "\n\n## Active SubAgent Results:\n"
+            subagent_context = "\n\n## SubAgent Results (USE THESE for your final answer):\n"
             for subagent in self._subagents:
-                subagent_context += f"\n### SubAgent: {subagent.name}\n"
+                subagent_context += f"\n### {subagent.name}\n"
                 subagent_context += f"Steps taken: {len(subagent.state.steps)}\n"
                 if subagent.state.answer:
-                    subagent_context += f"Result: {subagent.state.answer}\n"
+                    # 结构化展示 answer，方便 LLM 提取
+                    answer_dict = subagent.state.answer.to_dict()
+                    subagent_context += f"Status: SUCCESS\n"
+                    subagent_context += f"Result columns: {answer_dict.get('columns', [])}\n"
+                    subagent_context += f"Result rows: {answer_dict.get('rows', [])}\n"
                 elif subagent.state.failure_reason:
-                    subagent_context += f"Failed: {subagent.state.failure_reason}\n"
+                    subagent_context += f"Status: FAILED - {subagent.state.failure_reason}\n"
+                else:
+                    subagent_context += f"Status: INCOMPLETE\n"
+            subagent_context += "\nIMPORTANT: Use the successful SubAgent results above to compose your final answer. Do NOT ignore them.\n"
             messages.append(ModelMessage(role="user", content=subagent_context))
 
         return messages
@@ -182,9 +189,14 @@ class OrchestratorAgent:
 
         # 使用 SimpleNamespace 创建轻量级任务对象
         from types import SimpleNamespace
+        sub_task_question = (
+            f"{fork_request.task_description}\n\n"
+            f"Context: {fork_request.task_context}\n\n"
+            f"Expected output: {fork_request.expected_output}"
+        )
         sub_task = SimpleNamespace(
             task_id=f"{task.task_id}_{subagent_name}",
-            question=f"{fork_request.task_description}\n\nContext: {fork_request.task_context}\n\nExpected output: {fork_request.expected_output}",
+            question=sub_task_question,
             context_dir=task.context_dir,
             difficulty=task.difficulty,
         )
@@ -254,6 +266,7 @@ class OrchestratorAgent:
         # Track if fork_subagent has been used (for hard/extreme tasks)
         is_hard_or_extreme = task.difficulty.lower() in ("hard", "extreme")
         fork_subagent_used = False
+        fork_reminder_count = 0  # 限制 fork_subagent 强制提醒次数，避免反复提醒浪费步骤
 
         for step_index in range(1, self.config.max_main_steps + 1):
             # Add urgency reminder when approaching max steps (last 5 steps)
@@ -307,8 +320,8 @@ class OrchestratorAgent:
                     task_ctx = model_step.action_input.get("task_context", "")
                     expected_out = model_step.action_input.get("expected_output", "")
 
-                    # 检查是否还有剩余的 subagent 槽位
-                    remaining_slots = self.config.max_subagents - len(self._subagents)
+                    # 检查是否还有剩余的 subagent 槽位（含排队中的请求）
+                    remaining_slots = self.config.max_subagents - len(self._subagents) - len(self._pending_subagent_requests)
                     
                     if remaining_slots <= 0:
                         # 槽位已满，无法创建新 subagent
@@ -352,7 +365,7 @@ class OrchestratorAgent:
                         "ok": True,
                         "tool": "fork_subagent",
                         "status": "queued",
-                        "message": f"Subagent request queued. Total pending: {len(self._pending_subagent_requests)}. Used {len(self._subagents)}/{self.config.max_subagents} subagents.",
+                        "message": f"Subagent request queued. Total pending: {len(self._pending_subagent_requests)}. Used {len(self._subagents) + len(self._pending_subagent_requests)}/{self.config.max_subagents} subagent slots.",
                     }
 
                     step_record = OrchestratorStepRecord(
@@ -367,8 +380,9 @@ class OrchestratorAgent:
                     self._state.steps.append(step_record)
                     continue
                 
-                # Runtime enforcement: hard/extreme tasks MUST use fork_subagent
-                if is_hard_or_extreme and not fork_subagent_used and step_index >= 3:
+                # Runtime enforcement: hard/extreme tasks MUST use fork_subagent (最多提醒1次)
+                if is_hard_or_extreme and not fork_subagent_used and fork_reminder_count < 1 and step_index >= 3:
+                    fork_reminder_count += 1
                     # Force subagent usage by injecting a reminder and re-trying
                     logger.warning(f"Hard/extreme task not using fork_subagent at step {step_index}. Injecting mandatory reminder.")
                     
@@ -468,6 +482,33 @@ class OrchestratorAgent:
                                 f"Please use other tools to complete the task or submit your answer with current information."
                             )
                             messages.append(ModelMessage(role="user", content=failure_message))
+
+                    # 关键修复：如果模型试图在 subagent 结果返回前提交 answer，拦截此操作
+                    # 让模型看到 subagent 结果后再决定是否提交
+                    if model_step.action == "answer":
+                        logger.info("Intercepted premature answer while pending subagents just completed. Providing subagent results instead.")
+                        intercepted_observation = {
+                            "ok": True,
+                            "tool": "answer_intercepted",
+                            "message": "Your answer was intercepted because subagent results just became available. "
+                                       "Review the subagent results above and submit your final answer.",
+                            "subagent_summary": {
+                                "total": len(parallel_results),
+                                "successful": sum(1 for r in parallel_results if r.success),
+                                "failed": sum(1 for r in parallel_results if not r.success),
+                            }
+                        }
+                        step_record = OrchestratorStepRecord(
+                            step_index=step_index,
+                            thought=model_step.thought,
+                            action="answer_intercepted",
+                            action_input=model_step.action_input,
+                            raw_response=raw_response,
+                            observation=intercepted_observation,
+                            ok=True,
+                        )
+                        self._state.steps.append(step_record)
+                        continue
 
                 tool_result = self.tools.execute(task, model_step.action, model_step.action_input)
                 observation = {

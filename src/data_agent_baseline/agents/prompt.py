@@ -87,21 +87,26 @@ When you have the final result, you MUST use the `answer` tool with this exact J
 # =============================================================================
 
 ORCHESTRATOR_RESPONSE_EXAMPLES = """
-Example response when forking a sub-agent:
+Example 1: Explore first, then delegate with context:
 ```json
-{"thought":"Plan: 1. Explore data structure in parallel using sub-agents\\n2. Combine results for final analysis\\nBlocker: None\\nAssumption: Independent data exploration can happen in parallel\\n\\nI'll fork two sub-agents to explore different aspects of the data.","action":"fork_subagent","action_input":{"task_description":"Explore the customers table schema and sample data","task_context":"Available files: knowledge.md, csv/customers.csv. Use these exact paths without 'context/' prefix.","expected_output":"Schema details and sample rows from customers table"}}
+{{"thought":"Plan: 1. First explore data structure and knowledge.md\\n2. Understand the task requirements\\n3. Then fork sub-agents with DETAILED instructions\\n\\nBlocker: None\\nAssumption: Need to understand data before delegating","action":"list_context","action_input":{{"max_depth": 4}}}}
 ```
 
-Example response when handling fork result:
+Example 2: Good delegation with specific, actionable instructions:
 ```json
-{"thought":"Sub-agent 'explorer1' completed successfully. Got schema for customers table.\\nPlan: 1. ✓ Schema exploration\\n2. Query customers table\\n3. Join with orders\\nBlocker: None\\nAssumption: None\\n\\nNow I have the schema, I'll proceed with querying.","action":"read_csv","action_input":{"path":"csv/customers.csv"}}
+{{"thought":"I've read knowledge.md and understand the data format. Now I'll fork a sub-agent with detailed context.","action":"fork_subagent","action_input":{{"task_description":"Find all patients under 70 years old from Patient.md","task_context":"Data format: NARRATIVE TEXT (not CSV). Patient.md contains paragraphs with Medical Record Number, sex, Birthday. Age = current_year - year(Birthday). Parsing: use execute_python with regex. Files: doc/Patient.md, knowledge.md","expected_output":"Python list of patient IDs who are under 70"}}}}
 ```
 
-Example response for final answer:
+Example 3: BAD delegation - vague, no context (DO NOT do this):
 ```json
-{"thought":"Plan: 1. ✓ Explored data\n2. ✓ Queried tables\n3. ✓ Combined results\nBlocker: None\nAssumption: Verified\n\nI have the final result table.","action":"answer","action_input":{"columns":["department","avg_salary"],"rows":[["Engineering",95000],["Sales",72000]]}}
+{{"thought":"I'll fork a subagent to process the file.","action":"fork_subagent","action_input":{{"task_description":"Process Patient.md lines 1-400","task_context":"Available files: doc/Patient.md","expected_output":"Patient data"}}}}
 ```
-""".strip()
+This is WRONG: vague 'process' task, no criteria, no parsing strategy, splits by line range.
+
+Example 4: Synthesize subagent results and submit answer:
+```json
+{{"thought":"Sub-agents completed. Patient A found [12345, 67890], condition B found [12345, 11111]. Need intersection.","action":"execute_python","action_input":{{"code":"under_70 = [12345, 67890]\\ncond_b = [12345, 11111]\\nresult = len(set(under_70) & set(cond_b))\\nprint(f'Count: {{result}}')"}}}}
+```""".strip()
 
 
 
@@ -149,6 +154,18 @@ You are the Orchestrator Agent responsible for coordinating complex data analysi
 3. **Delegation**: Fork sub-agents to handle specific sub-tasks when appropriate
 4. **Synthesis**: Combine results from sub-agents to produce the final answer
 
+## Delegation Best Practices
+
+When forking sub-agents:
+1. **Explore first** - Read knowledge.md and understand data format BEFORE delegating
+2. **Decompose by logical task** - NOT by file line ranges ("process lines 1-400" is BAD)
+3. **Write specific task_description** - "Find patients with creatinine > 1.2" not "process file"
+4. **Include key context in task_context** - Data format, filtering criteria, parsing strategy, file paths
+5. **Specify expected_output** - "Python list of patient IDs" not "relevant data"
+6. **Fork consecutively** - Fork all sub-agents in sequence so they batch-execute in parallel
+
+Anti-Patterns: ❌ Splitting by line ranges ❌ Vague descriptions ("explore data") ❌ Empty context ❌ Forking before understanding data
+
 ## Fork Mechanism
 
 When you identify a sub-task suitable for parallel execution, you can fork a sub-agent by returning:
@@ -188,29 +205,15 @@ Some tasks contain data in unstructured formats (e.g., text documents, markdown 
 2. **Use `execute_python` with regex or string parsing** to extract structured information
 3. **For complex parsing tasks**, consider using sub-agents to handle different document types in parallel
 
-## Handling Large Documents (CRITICAL)
+## Handling Large Documents
 
 When dealing with large text/markdown files (>500 lines or >50KB):
 
-### Strategy 1: Parallel Chunk Processing (RECOMMENDED)
-1. **First, use `execute_python` to get file statistics** (line count, structure)
-2. **Fork multiple sub-agents in sequence** - they will be automatically executed in parallel:
-   - Sub-agent 1: Process first N lines/records
-   - Sub-agent 2: Process next N lines/records
-   - Continue until entire file is covered
-3. **Each sub-agent** uses `execute_python` with file seeking or line slicing to read its assigned chunk
-4. **Results will be combined automatically** after all sub-agents complete
-
-### Strategy 2: Targeted Search
-1. **Use `execute_python` with regex** to search for specific patterns/keywords
-2. **Extract only relevant sections** rather than reading entire file
-3. **Focus on records matching the query criteria**
-
-### Critical Rules for Large Documents:
-- **NEVER attempt to read the entire large file at once** - it will be truncated at 4000 chars
-- **ALWAYS use sub-agents for parallel processing** on hard/extreme tasks with large documents
-- **Use execute_python for precise line-based extraction** rather than read_doc for large files
-- **Fork sub-agents in sequence** - the system will automatically batch and execute them in parallel
+1. **Use `execute_python` to get file statistics** (line count, structure)
+2. **Use `execute_python` with regex** to search for specific patterns and extract only relevant sections
+3. **NEVER read the entire large file at once** - it will be truncated at 4000 chars
+4. **If using sub-agents, delegate by logical task** (e.g., "find condition X") not by line ranges
+5. **Use execute_python for precise extraction** rather than read_doc for large files
 
 ## Output Formatting Rules (CRITICAL)
 
@@ -266,7 +269,7 @@ Before submitting your answer, verify:
 """.strip()
 
 
-def build_task_prompt(task: PublicTask) -> str:
+def build_task_prompt(task: PublicTask, skip_large_doc_hint: bool = False) -> str:
     base_prompt = (
         f"Question: {task.question}\n"
         "All tool file paths are relative to the task context directory. "
@@ -284,7 +287,7 @@ def build_task_prompt(task: PublicTask) -> str:
     is_hard_or_extreme = task.difficulty.lower() in ("hard", "extreme")
     has_large_doc_indicator = any(kw in question_lower for kw in large_doc_keywords)
 
-    if is_hard_or_extreme and has_large_doc_indicator:
+    if not skip_large_doc_hint and is_hard_or_extreme and has_large_doc_indicator:
         large_doc_reminder = """
 
 ## IMPORTANT: Large Document Processing Required
@@ -294,17 +297,11 @@ This task likely involves large text/markdown files (e.g., Patient.md, Laborator
 **You MUST:**
 1. Use `list_context` first to identify all document files and their sizes
 2. Use `execute_python` to check line counts before processing
-3. **Fork multiple sub-agents in sequence** to process large files in parallel chunks
-   - The system will automatically batch and execute them in parallel
-   - Each sub-agent should process a specific line range (e.g., lines 1-500, 501-1000, etc.)
+3. **Fork sub-agents by LOGICAL TASK, NOT by line ranges**
+   - GOOD: "Find all patients with condition X from Patient.md"
+   - BAD: "Process Patient.md lines 1-500" (splits by line range, not logical task)
 4. **DO NOT use `read_doc` for large files** - it only returns first 4000 chars
-5. Use `execute_python` with file reading and line slicing instead
-
-**Example approach:**
-- Fork sub-agent 1: "Process Patient.md lines 1-500, find male patients"
-- Fork sub-agent 2: "Process Patient.md lines 501-1000, find male patients"
-- Fork sub-agent 3: "Process Patient.md lines 1001+, find male patients"
-- The system will execute all 3 in parallel and return combined results
+5. Use `execute_python` with file reading and regex search instead
 """
         base_prompt += large_doc_reminder
 

@@ -216,11 +216,15 @@ def create_default_tool_registry(include_fork_subagent: bool = True) -> ToolRegi
     if include_fork_subagent:
         specs["fork_subagent"] = ToolSpec(
             name="fork_subagent",
-            description="Fork a sub-agent to handle a parallel sub-task. Use this when you identify independent work streams that can be executed in parallel. The sub-agent will inherit your context and work independently.",
+            description=(
+                "Fork a sub-agent to handle a specific sub-task in parallel. "
+                "Provide detailed instructions: specify WHAT to find and HOW. "
+                "The sub-agent inherits your full conversation context and works independently."
+            ),
             input_schema={
-                "task_description": "Description of the sub-task",
-                "task_context": "Context information for the sub-task",
-                "expected_output": "Expected output format from the sub-agent",
+                "task_description": "(REQUIRED) Specific, actionable instruction (e.g., 'find patients with creatinine > 1.2')",
+                "task_context": "(REQUIRED) Key info: data format, filtering criteria, parsing strategy, file paths",
+                "expected_output": "(REQUIRED) Exact format of expected result (e.g., 'Python list of patient IDs')",
             },
         )
     

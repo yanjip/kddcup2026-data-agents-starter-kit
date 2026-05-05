@@ -285,8 +285,8 @@ class SubAgent:
         
         messages.extend(filtered_inherited)
 
-        # 构建任务提示词
-        task_prompt = build_task_prompt(task)
+        # 构建任务提示词（跳过大文档提示，subagent 已继承上下文）
+        task_prompt = build_task_prompt(task, skip_large_doc_hint=True)
 
         # 如果有 Schema 知识，添加到提示词中
         if schema_knowledge and (schema_knowledge.tables or schema_knowledge.semantic_mappings):
@@ -408,13 +408,17 @@ class SubAgent:
                         ok=False,
                     )
                 )
-                return ForkResult(
-                    subagent_name=self.name,
-                    success=False,
-                    result=None,
-                    steps=list(self.state.steps),
-                    error=str(exc),
-                )
+                # 继续执行而非立即返回，允许 subagent 从错误中恢复
+                # 但如果是最后一步则返回失败
+                if step_index >= self.config.max_steps:
+                    return ForkResult(
+                        subagent_name=self.name,
+                        success=False,
+                        result=None,
+                        steps=list(self.state.steps),
+                        error=str(exc),
+                    )
+                continue
 
         self.state.failure_reason = f"SubAgent did not complete within max_steps ({self.config.max_steps})."
         return ForkResult(
