@@ -62,11 +62,11 @@
 - CORRECT: 6 schools (5 with NULL funding type must still appear)
 - Lesson: "List" questions require LEFT JOIN to preserve records with missing optional fields
 
-### Case E: Domain threshold guessing (task_344)
+### Case E: Missing threshold leads to infinite search loop (task_344)
 - Question: "Among male patients with normal white blood cells, how many have abnormal fibrinogen?"
-- WRONG result: 0 (guessed thresholds incorrectly)
-- CORRECT result: 4 (must use exact thresholds from knowledge.md)
-- Lesson: NEVER guess medical thresholds — always look up exact values in knowledge.md
+- FAILURE: Agent repeatedly searched knowledge.md and Patient.md for WBC/FG thresholds, but neither file contained them. Agent exhausted max_steps without submitting any answer.
+- Root cause: knowledge.md did NOT define WBC or fibrinogen thresholds. The rule "always look up exact values in knowledge.md" cannot be followed when the information simply does not exist.
+- Lesson: After searching knowledge.md ONCE, if the threshold is not defined there, infer from standard medical knowledge or data distribution and proceed. NEVER spend more than 2 steps searching for the same missing information.
 
 ### Case F: Ratio numerator/denominator swapped (task_243)
 - Question: "How many times is the number of posts compared to votes?"

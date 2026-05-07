@@ -121,12 +121,14 @@ When you have the final result, you MUST use the `answer` tool with this exact J
   3. Check if there are ties
 - **Rule**: Never blindly take `LIMIT 1 OFFSET N` without printing surrounding rows to verify
 
-### 6. Threshold Lookups — NEVER guess medical/domain thresholds
-- Words like "normal", "abnormal", "severe", "high", "low" ALWAYS have specific numeric definitions in knowledge.md
-- You MUST look up the EXACT threshold from knowledge.md before writing any filter
-- WRONG: Guessing that "normal white blood cells" means WBC between 4000-10000
-- RIGHT: Read knowledge.md, find the exact definition, use that exact value
-- **Rule**: For ANY domain-specific qualifier, extract the definition from knowledge.md FIRST, then query
+### 6. Threshold Lookups — Use knowledge.md FIRST, then fall back to standard knowledge
+- Words like "normal", "abnormal", "severe", "high", "low" USUALLY have specific numeric definitions in knowledge.md
+- You MUST look up the threshold from knowledge.md FIRST
+- **If knowledge.md does NOT contain the threshold** after a single thorough read, use standard medical/domain knowledge or infer from the data distribution. Do NOT get stuck in an infinite search loop.
+- WRONG: Guessing that "normal white blood cells" means WBC between 4000-10000 without checking knowledge.md first
+- WRONG: Repeatedly searching the same files for a threshold that does not exist, burning all remaining steps
+- RIGHT: Read knowledge.md thoroughly once. If the exact definition is found, use it. If NOT found, apply standard medical/domain knowledge or data-driven inference and PROCEED.
+- **Rule**: For ANY domain-specific qualifier, check knowledge.md FIRST. If missing after one thorough search, infer from standard knowledge or data and move on. NEVER spend more than 2 steps searching for the same missing definition.
 
 ### 7. "Lowest/Highest" with Ties
 - When a question asks "which X has the lowest Y", there may be MULTIPLE Xs tied at the lowest value
@@ -378,10 +380,9 @@ The FIRST action after understanding the question MUST be to read knowledge.md Y
 4. **If you detect missing information or ambiguity** — for example:
    - The task uses a term that could have multiple meanings (e.g., "severe", "normal", "active")
    - You are unsure which table or column to use
-   - The sub-agent's knowledge summary seems incomplete or contradictory
    - You need to verify a threshold, date format, or categorical mapping
    
-   **You MUST re-read knowledge.md** by forking another sub-agent with a focused question. Do NOT guess or assume.
+   **First, re-read knowledge.md yourself** to verify. If the information is genuinely NOT in knowledge.md after one thorough check, do NOT keep searching or fork sub-agents to search again. Infer from the data or standard knowledge and proceed.
 5. Identify independent work streams that can be executed in parallel via sub-agents
 6. Sub-agents are especially useful for:
    - Independent data exploration tasks
@@ -442,12 +443,14 @@ The FIRST action after understanding the question MUST be to read knowledge.md Y
   3. Check if there are ties
 - **Rule**: Never blindly take `LIMIT 1 OFFSET N` without printing surrounding rows to verify
 
-### 6. Threshold Lookups — NEVER guess medical/domain thresholds
-- Words like "normal", "abnormal", "severe", "high", "low" ALWAYS have specific numeric definitions in knowledge.md
-- You MUST look up the EXACT threshold from knowledge.md before writing any filter
-- WRONG: Guessing that "normal white blood cells" means WBC between 4000-10000
-- RIGHT: Read knowledge.md, find the exact definition, use that exact value
-- **Rule**: For ANY domain-specific qualifier, extract the definition from knowledge.md FIRST, then query
+### 6. Threshold Lookups — Use knowledge.md FIRST, then fall back to standard knowledge
+- Words like "normal", "abnormal", "severe", "high", "low" USUALLY have specific numeric definitions in knowledge.md
+- You MUST look up the threshold from knowledge.md FIRST
+- **If knowledge.md does NOT contain the threshold** after a single thorough read, use standard medical/domain knowledge or infer from the data distribution. Do NOT get stuck in an infinite search loop.
+- WRONG: Guessing that "normal white blood cells" means WBC between 4000-10000 without checking knowledge.md first
+- WRONG: Repeatedly searching the same files for a threshold that does not exist, burning all remaining steps
+- RIGHT: Read knowledge.md thoroughly once. If the exact definition is found, use it. If NOT found, apply standard medical/domain knowledge or data-driven inference and PROCEED.
+- **Rule**: For ANY domain-specific qualifier, check knowledge.md FIRST. If missing after one thorough search, infer from standard knowledge or data and move on. NEVER spend more than 2 steps searching for the same missing definition.
 
 ### 7. "Lowest/Highest" with Ties
 - When a question asks "which X has the lowest Y", there may be MULTIPLE Xs tied at the lowest value
