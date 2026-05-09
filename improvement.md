@@ -219,3 +219,39 @@ OrchestratorAgent (subagent.py)  ← 高级代理
 - `src/data_agent_baseline/agents/subagent.py` - SubAgent 消息构建
 - `src/data_agent_baseline/agents/model.py` - 模型请求重试机制
 
+# 5月9日
+我来分析两个文件的差异，找出 `orchestrator_new.py` 的改进点，然后合并到 `orchestrator.py` 中。
+经过对比分析，`orchestrator_new.py` 相比 `orchestrator.py` 有以下关键改进：
+
+| # | 改进点 | orchestrator.py (当前) | orchestrator_new.py (新) |
+|---|--------|----------------------|------------------------|
+| 1 | 工具描述动态过滤 | 无，subagent满后仍展示fork_subagent | `_filter_tool_descriptions`，满时自动移除 |
+| 2 | subagent结果展示 | 简单字符串 | 结构化展示columns/rows + "USE THESE"提示 |
+| 3 | SubTask创建 | 内嵌SubTask类 | `SimpleNamespace`轻量化 |
+| 4 | subagent生命周期 | 创建后finally移除，`_build_messages`看不到结果 | 保留在列表中供结果展示 |
+| 5 | 模型请求错误处理 | 无 | try/except捕获，优雅降级 |
+| 6 | fork槽位预检 | 排队后才发现超限 | 排队前检查，明确拒绝 |
+| 7 | hard/extreme任务提醒 | 无 | 强制提醒使用fork_subagent |
+| 8 | 答案拦截 | 无 | subagent刚完成时拦截过早answer |
+| 9 | subagent失败详情 | 无 | 提供详细失败信息 |
+| 10 | parallel_subagent raw_response | 空字符串 | 合法JSON格式 |
+| 11 | knowledge.md特例 | 单独处理 | 移除，统一逻辑 |
+| 12 | 验证Agent | 有 | 无(需保留) |
+
+**已合并的改进点：**
+
+1. **`_filter_tool_descriptions` 方法** - subagent 槽位满时自动从工具描述中移除 `fork_subagent`，防止 LLM 尝试调用不可用的工具
+2. **`_build_system_prompt` 动态过滤** - 计算剩余槽位时纳入 `_pending_subagent_requests`，槽位满时添加警告提示
+3. **subagent 结果结构化展示** - 展示 columns/rows 而非简单字符串，添加 "USE THESE" 强提示，增加 INCOMPLETE 状态
+4. **`SimpleNamespace` 替代 `SubTask` 类** - 轻量化创建子任务对象
+5. **保留 subagent 引用** - 不再在 `_create_subagent` 中 `finally` 移除 subagent，使 `_build_messages` 能展示完整结果
+6. **模型请求错误处理** - 捕获 `model.complete` 异常，优雅降级而非崩溃
+7. **fork 槽位预检** - 排队前检查剩余槽位，满时明确拒绝并提示替代方案
+8. **hard/extreme 任务提醒** - 强制提醒使用 `fork_subagent`（最多1次，避免循环）
+9. **答案拦截机制** - subagent 结果刚返回时拦截过早的 answer 提交
+10. **subagent 失败详情** - 提供详细的失败信息帮助 LLM 调整策略
+11. **`raw_response` 修复** - parallel_subagent 步骤使用合法 JSON 格式而非空字符串
+12. **简化 fork 处理** - 移除 `knowledge.md` 特殊路径，统一逻辑
+13. **导入清理** - 合并重复导入，移除未使用的 `StepRecord` 和 `field`
+
+**保留的现有特性：** 验证 Agent (`VerificationAgent`) 完整保留，因为 `orchestrator_new.py` 没有此功能但 `orchestrator.py` 原有此特性。

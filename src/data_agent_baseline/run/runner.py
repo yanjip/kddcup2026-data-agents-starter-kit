@@ -92,6 +92,7 @@ def build_model_adapter(config: AppConfig):
         api_base=config.agent.api_base,
         api_key=config.agent.api_key,
         temperature=config.agent.temperature,
+        max_input_length=getattr(config.agent, 'max_input_length', None),
     )
 
 

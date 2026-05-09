@@ -38,11 +38,13 @@ class OpenAIModelAdapter:
         api_base: str,
         api_key: str,
         temperature: float,
+        max_input_length: int | None = None,
     ) -> None:
         self.model = model
         self.api_base = api_base.rstrip("/")
         self.api_key = api_key
         self.temperature = temperature
+        self.max_input_length = max_input_length
         self._client: AsyncOpenAI | None = None
 
     @property
@@ -63,6 +65,7 @@ class OpenAIModelAdapter:
             self._client = None
 
     async def complete(self, messages: list[ModelMessage]) -> str:
+        messages = self._truncate_messages(messages)
         max_retries = 8
         last_exception = None
 
@@ -113,6 +116,81 @@ class OpenAIModelAdapter:
                 else:
                     logger.error(f"Model request failed after {max_retries} attempts: {exc}")
                     raise RuntimeError(f"Model request failed after {max_retries} attempts: {exc}") from exc
+
+    @staticmethod
+    def _estimate_tokens(text: str) -> float:
+        """基于字符数估算 token 数：中文字符≈0.6，其他字符≈0.3"""
+        tokens = 0.0
+        for ch in text:
+            if "\u4e00" <= ch <= "\u9fff":
+                tokens += 0.6
+            else:
+                tokens += 0.3
+        return tokens
+
+    @staticmethod
+    def _truncate_text(text: str, max_tokens: float) -> str:
+        """从文本开头截断，保留尾部，使估算 token 不超过限制"""
+        tokens = 0.0
+        start = len(text)
+        for i in range(len(text) - 1, -1, -1):
+            ch = text[i]
+            if "\u4e00" <= ch <= "\u9fff":
+                tokens += 0.6
+            else:
+                tokens += 0.3
+            if tokens > max_tokens:
+                start = i + 1
+                break
+        return text[start:]
+
+    def _truncate_messages(self, messages: list[ModelMessage]) -> list[ModelMessage]:
+        """如果消息总长度超出限制，保留 system prompt 和最近的历史"""
+        if not self.max_input_length or not messages:
+            return messages
+
+        total = sum(self._estimate_tokens(m.content) for m in messages)
+        if total <= self.max_input_length:
+            return messages
+
+        logger.warning(
+            f"Input length estimated {total:.0f} tokens exceeds limit {self.max_input_length}, "
+            f"truncating from {len(messages)} messages..."
+        )
+
+        # 优先保留 system prompt
+        if messages[0].role == "system":
+            system_msg = messages[0]
+            system_tokens = self._estimate_tokens(system_msg.content)
+
+            if system_tokens > self.max_input_length:
+                truncated = self._truncate_text(system_msg.content, self.max_input_length)
+                return [ModelMessage(role="system", content=truncated)]
+
+            remaining = self.max_input_length - system_tokens
+            history = messages[1:]
+            result = [system_msg]
+        else:
+            remaining = self.max_input_length
+            history = messages
+            result = []
+
+        # 从后往前保留历史消息
+        kept = []
+        for msg in reversed(history):
+            msg_tokens = self._estimate_tokens(msg.content)
+            if msg_tokens <= remaining:
+                kept.insert(0, msg)
+                remaining -= msg_tokens
+            else:
+                # 尝试截断最近一条放不下的消息
+                if not kept and remaining > 0:
+                    truncated = self._truncate_text(msg.content, remaining)
+                    if truncated:
+                        kept.insert(0, ModelMessage(role=msg.role, content=truncated))
+                break
+
+        return result + kept
 
 
 class ScriptedModelAdapter:

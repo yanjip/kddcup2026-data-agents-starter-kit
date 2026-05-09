@@ -34,6 +34,7 @@ class AgentConfig:
     max_subagent_steps: int = 12
     max_subagents: int = 6
     enable_verification: bool = False  # 是否启用验证 Agent
+    max_input_length: int = 250000  # 模型最大输入长度限制（按字符估算 token）
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,6 +84,7 @@ def load_app_config(config_path: Path) -> AppConfig:
         max_subagent_steps=int(agent_payload.get("max_subagent_steps", agent_defaults.max_subagent_steps)),
         max_subagents=int(agent_payload.get("max_subagents", agent_defaults.max_subagents)),
         enable_verification=bool(agent_payload.get("enable_verification", agent_defaults.enable_verification)),
+        max_input_length=int(agent_payload.get("max_input_length", agent_defaults.max_input_length)),
     )
     raw_run_id = run_payload.get("run_id")
     run_id = run_defaults.run_id
