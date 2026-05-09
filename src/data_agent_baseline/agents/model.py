@@ -6,7 +6,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from openai import APIError, AsyncOpenAI
+from openai import APIError, AsyncOpenAI, BadRequestError, RateLimitError
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +63,7 @@ class OpenAIModelAdapter:
             self._client = None
 
     async def complete(self, messages: list[ModelMessage]) -> str:
-        max_retries = 5
+        max_retries = 8
         last_exception = None
 
         for attempt in range(1, max_retries + 1):
@@ -83,11 +83,25 @@ class OpenAIModelAdapter:
                     raise RuntimeError("Model response missing text content.")
                 return content
 
+            except BadRequestError as exc:
+                # 400 永久错误（如 input 超长）：不重试，直接抛出
+                logger.error(f"BadRequest 400 (permanent, no retry): {exc}")
+                raise RuntimeError(f"Model request failed (400 BadRequest): {exc}") from exc
+            except RateLimitError as exc:
+                # 429 限流专用：长退避，给 API 配额恢复时间
+                last_exception = exc
+                if attempt < max_retries:
+                    wait_time = 15 * attempt  # 15s, 30s, 45s...
+                    logger.warning(f"Rate limit 429 (attempt {attempt}/{max_retries}). Waiting {wait_time}s...")
+                    await asyncio.sleep(wait_time)
+                else:
+                    logger.error(f"Rate limit persisted after {max_retries} attempts: {exc}")
+                    raise RuntimeError(f"Model request failed after {max_retries} attempts: {exc}") from exc
             except APIError as exc:
                 last_exception = exc
                 if attempt < max_retries:
                     logger.warning(f"Model request failed (attempt {attempt}/{max_retries}): {exc}. Retrying...")
-                    await asyncio.sleep(1.5 * attempt)  # 指数退避
+                    await asyncio.sleep(2 * attempt)
                 else:
                     logger.error(f"Model request failed after {max_retries} attempts: {exc}")
                     raise RuntimeError(f"Model request failed after {max_retries} attempts: {exc}") from exc
@@ -95,7 +109,7 @@ class OpenAIModelAdapter:
                 last_exception = exc
                 if attempt < max_retries:
                     logger.warning(f"Model request failed (attempt {attempt}/{max_retries}): {exc}. Retrying...")
-                    await asyncio.sleep(1.5 * attempt)
+                    await asyncio.sleep(2 * attempt)
                 else:
                     logger.error(f"Model request failed after {max_retries} attempts: {exc}")
                     raise RuntimeError(f"Model request failed after {max_retries} attempts: {exc}") from exc

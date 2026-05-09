@@ -18,6 +18,66 @@ from data_agent_baseline.tools.sqlite import execute_read_only_sql, inspect_sqli
 EXECUTE_PYTHON_TIMEOUT_SECONDS = 30
 
 
+# =============================================================================
+# SQL Query Logic Safeguards — injected into execute_context_sql tool description
+# =============================================================================
+
+SQL_SAFEGUARD_RULES = """\
+CRITICAL — Before writing SQL, obey these rules or you WILL get wrong answers:
+
+1. AND vs OR: When the question says "have X AND Y", it means BOTH conditions on the SAME entity.
+   WRONG: WHERE element = 'p' OR element = 'n'.
+   RIGHT: Use a self-join, subquery, or GROUP BY + HAVING COUNT(DISTINCT ...) >= 2.
+
+2. Aggregation Sanity Check: After computing AVG/SUM/COUNT/ratio, ALWAYS print intermediate values and sanity-check them.
+   Is the percentage between 0-100? Is the count plausible? Rule: print(f'Result: {value}, Sanity: check') before submitting.
+
+3. Percentage and Ratio: Before calculating, explicitly write: numerator = ???, denominator = ???. Print BOTH separately before dividing.
+   "How many times is A compared to B" → A / B (never B / A).
+
+4. NULL Preservation in JOINs: When the question says "List the names AND funding types", some records may have NULL funding type — they MUST still appear.
+   Use LEFT JOIN (not INNER JOIN) when the question asks to "list" or "show" entities that may lack some attributes.
+
+5. Ranking and "Nth" Queries: When finding "the driver who ranked 2nd", ALWAYS: 1) Print the TOP 5 results first. 2) Verify the correct row is selected. 3) Check for ties.
+   Never blindly take LIMIT 1 OFFSET N.
+
+6. Threshold Lookups: Words like "normal", "abnormal", "severe", "high", "low" ALWAYS have specific numeric definitions in knowledge.md.
+   You MUST look up the EXACT threshold from knowledge.md before writing any filter.
+
+7. Lowest/Highest with Ties: When a question asks "which X has the lowest Y", there may be MULTIPLE Xs tied at the lowest value.
+   Return ALL tied results, not just one."""
+
+SQL_FAILURE_CASES = """\
+REAL FAILURE CASES (learn from these mistakes):
+
+Case A (task_194): Question: bonds with BOTH element 'p' AND element 'n'. WRONG: WHERE element='p' OR element='n' → returned 270 rows. RIGHT: self-join / HAVING COUNT(DISTINCT element)>=2 → 7 rows. Lesson: AND on same column needs self-join or HAVING, never OR.
+
+Case B (task_173): Question: list schools AND their funding types. WRONG: INNER JOIN → only 1 row (5 schools had NULL funding). RIGHT: LEFT JOIN → 6 rows. Lesson: "list X and Y" where Y may be NULL → LEFT JOIN.
+
+Case C (task_355): Question: average monthly spending per customer. WRONG: forgot to divide by customer count → returned 82,027,220. RIGHT: SUM / (12 * customer_count) → 6,836. Lesson: always sanity-check aggregation magnitude.
+
+Case D (task_243): Question: ratio of A compared to B. WRONG: B / A = 0.103. RIGHT: A / B = 0.375. Lesson: "A compared to B" → A is numerator, B is denominator.
+
+Case E (task_89): Question: driver who ranked 2nd. WRONG: LIMIT 1 OFFSET 1 → picked wrong row (ties + wrong sort direction). RIGHT: print TOP 5 first, then select. Lesson: always verify ranking with visual inspection.
+
+Case F (task_25): Question: patients with "normal" white blood cell count. WRONG: assumed 4000-10000. RIGHT: knowledge.md says 3500-9500. Lesson: ALWAYS look up thresholds in knowledge.md.
+
+Case G (task_408): Question: driver with fewest wins. WRONG: LIMIT 1 → missed 3 tied drivers. RIGHT: return all rows with MIN value. Lesson: check for ties before limiting.
+
+Case H (task_200): Question: count of records meeting condition X. WRONG: COUNT(*) counted all rows including NULLs. RIGHT: COUNT(column) or COUNT(DISTINCT column). Lesson: COUNT(*) ≠ COUNT(column)."""
+
+
+# =============================================================================
+# Python Calculation Safeguards — injected into execute_python tool description
+# =============================================================================
+
+PYTHON_CALC_SAFEGUARDS = """\
+When using Python for calculations:
+- Aggregation Sanity Check: After computing AVG/SUM/COUNT/ratio, ALWAYS print intermediate values. Verify percentages are 0-100, counts are plausible.
+- Ratio Direction: Before dividing, explicitly write numerator = ???, denominator = ???. "A compared to B" → A / B.
+- Threshold Lookups: Words like "normal/abnormal/severe/high/low" have exact numeric definitions in knowledge.md. Read knowledge.md FIRST before coding any filter."""
+
+
 @dataclass(frozen=True, slots=True)
 class ToolSpec:
     name: str
@@ -171,7 +231,11 @@ def create_default_tool_registry(include_fork_subagent: bool = True) -> ToolRegi
         ),
         "execute_context_sql": ToolSpec(
             name="execute_context_sql",
-            description="Run a read-only SQL query against a sqlite/db file inside context.",
+            description=(
+                "Run a read-only SQL query against a sqlite/db file inside context.\n\n"
+                + SQL_SAFEGUARD_RULES + "\n\n"
+                + SQL_FAILURE_CASES
+            ),
             input_schema={"path": "relative/path/to/file.sqlite", "sql": "SELECT ...", "limit": 200},
         ),
         "execute_python": ToolSpec(
@@ -179,7 +243,8 @@ def create_default_tool_registry(include_fork_subagent: bool = True) -> ToolRegi
             description=(
                 "Execute arbitrary Python code with the task context directory as the "
                 "working directory. The tool returns the code's captured stdout as `output`. "
-                f"The execution timeout is fixed at {EXECUTE_PYTHON_TIMEOUT_SECONDS} seconds."
+                f"The execution timeout is fixed at {EXECUTE_PYTHON_TIMEOUT_SECONDS} seconds.\n\n"
+                + PYTHON_CALC_SAFEGUARDS
             ),
             input_schema={
                 "code": "import os\nprint(sorted(os.listdir('.')))",
@@ -202,7 +267,11 @@ def create_default_tool_registry(include_fork_subagent: bool = True) -> ToolRegi
         ),
         "read_doc": ToolSpec(
             name="read_doc",
-            description="Read a text-like document inside context.",
+            description=(
+                "Read a text-like document inside context. "
+                "IMPORTANT: When the question mentions \"normal/abnormal/severe/high/low\" or other qualitative thresholds, "
+                "you MUST read knowledge.md FIRST to find the exact numeric definitions before writing any SQL filter or Python code."
+            ),
             input_schema={"path": "relative/path/to/file.md", "max_chars": 4000},
         ),
         "read_json": ToolSpec(
