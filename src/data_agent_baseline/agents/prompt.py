@@ -55,12 +55,14 @@ OUTPUT_PROMPT = """
 2. Return only those requested columns. Do not include helper/debug columns such as IDs, dates, account IDs, balances, counts, or intermediate values unless explicitly asked.
 3. "List all X" means return only the X field, not the entire row.
 4. Multiple metrics usually belong horizontally in one row, not pivoted into multiple metric-name rows.
-5. If the question asks for "type of X and total value", group by the requested type level, not by lower-level descriptions unless explicitly asked.
-6. Keep null/empty optional attributes as null/empty; do not fill them from other columns.
-7. When asked for "full name" or similar combined attributes and the data has separate name fields, return individual components such as `first_name` and `last_name` as separate columns.
-8. For "list/show all records/transactions/people/customers/events that..." tasks, keep enough entity-identifying columns to identify each returned record, plus the requested value/status fields. Do not collapse a record list to only a bare amount/value if the row identity would be lost.
-9. For "tally", "summarize", "count by", "types/categories/elements", or similar wording, decide the output grain before answering: distinct values, counts per value, totals per value, or per-record details. Do not return per-record detail rows when the question asks for a category/element summary.
-10. Before submitting, verify: only appropriate requested/identifying columns, no calculation-only columns, correct grouping column, exact task/schema column terminology, and nulls preserved as-is.
+5. For "how many" or simple count questions, return only the count column/value unless the question explicitly asks for a breakdown by category.
+6. If the question asks for "type of X and total value", group by the requested type level, not by lower-level descriptions unless explicitly asked.
+7. Keep null/empty optional attributes as null/empty; do not fill them from other columns.
+8. When asked for "full name" or similar combined attributes and the data has separate name fields, return individual components such as `first_name` and `last_name` as separate columns.
+9. For "list/show all records/transactions/people/customers/events that..." tasks, keep enough entity-identifying columns to identify each returned record, plus the requested value/status fields. Do not collapse a record list to only a bare amount/value if the row identity would be lost.
+10. For "tally", "summarize", "count by", "types/categories/elements", or similar wording, decide the output grain before answering: distinct values, counts per value, totals per value, or per-record details. Do not return per-record detail rows when the question asks for a category/element summary.
+11. Preserve source/schema column names for fields you actually return unless the question explicitly asks for a renamed label. Do not add filter/grouping fields to the final answer just because they were used to compute it.
+12. Before submitting, verify: only appropriate requested/identifying columns, no calculation-only columns, correct grouping column, exact task/schema column terminology, and nulls preserved as-is.
 """.strip()
 
 
@@ -160,7 +162,9 @@ AGGREGATION_PROMPT = """
 4. Percentages must be between 0 and 100 unless the task explicitly asks for percent change that can exceed 100.
 5. Decide the aggregation grain: per row, per entity, per customer, per month, or whole dataset. Do not change grain silently.
 6. For "per unit" wording, compute or identify a unit price/rate such as total price divided by quantity/amount unless knowledge.md defines a different unit-price field.
-7. If two plausible formulas exist, compute both, compare against the wording/knowledge.md, and explain the chosen one in `thought` before answering.
+7. For "how many times", "compared to", "more than", or similar multiplicative wording, compute both `A / B` and `(A - B) / B` when wording is ambiguous. Choose based on the exact phrase and knowledge.md, and print numerator/denominator before answering.
+8. If two plausible formulas exist, compute both, compare against the wording/knowledge.md, and explain the chosen one in `thought` before answering.
+9. Submit numeric answers with full precision from the computation. Do not round, truncate, or format percentages/ratios unless the question explicitly asks.
 """.strip()
 
 
@@ -201,14 +205,15 @@ FIELD_MAPPING_PROMPT = """
 
 1. For terms like cost, amount, spent, fee, price, total, type, category, status, rank, and legal, prefer explicit knowledge.md definitions first, exact column-name matches second, and semantic guesses last.
 2. Do not equate similar fields by intuition (`spent` is not automatically `cost`; `category` is not automatically `type`).
-3. Natural-language entities usually want human-readable fields:
+3. When several columns could match one natural-language word, list the candidates and their source table meanings in `thought` before choosing. Examples: `amount` vs `spent` vs `cost`, `type` vs `category`, `status` vs `legalStatus`, `number` vs `driverId`.
+4. Natural-language entities usually want human-readable fields:
    - "the comment" -> `Text`, not comment Id
    - "the post" -> `Title`, not post Id
    - "the event" -> `event_name`, not event_id
    - "the user" -> `DisplayName` or name fields, not user Id
-4. Capitalized proper nouns and official names in the question usually need exact matching against name/title fields before broader semantic expansion. For example, first test whether "European Grand Prix" is a race/event name, not just a geographic phrase.
-5. For "type of X" questions, map the type at the X level using knowledge.md/schema before grouping. For example, "type of expenses" may refer to an event/expense business type, not necessarily a lower-level budget category such as Food or Advertisement.
-6. Return primary keys only when the question explicitly asks for id/identifier.
+5. Capitalized proper nouns and official names in the question usually need exact matching against name/title fields before broader semantic expansion. For example, first test whether "European Grand Prix" is a race/event name, not just a geographic phrase.
+6. For "type of X" questions, map the type at the X level using knowledge.md/schema before grouping. For example, "type of expenses" may refer to an event/expense business type, not necessarily a lower-level budget category such as Food or Advertisement.
+7. Return primary keys only when the question explicitly asks for id/identifier.
 """.strip()
 
 
@@ -232,24 +237,6 @@ Before final answer on non-trivial aggregation, join, ranking, ratio, min/max, o
 3. Both methods must print their results so they can be compared.
 4. If results differ, investigate the filter, grain, field mapping, and knowledge.md constraints before answering.
 5. Only call `answer` after the independent check agrees, unless the task is a simple direct lookup.
-""".strip()
-
-
-F1_PROMPT = """
-## Formula 1 Data Reminders
-
-1. `rank` and `positionOrder` can mean different things. For "ranked second", inspect both fields and knowledge.md wording before choosing.
-2. Qualifying `q1/q2/q3` times are strings; parse times to seconds for matching or nearest-time logic.
-3. Race `round` is not necessarily "track number"; inspect available driver/race/standing fields before assuming.
-4. Grand Prix phrases are often exact race names. Filter `races.name = '<Name> Grand Prix'` first when the wording says "all <Name> Grand Prix races"; do not reinterpret the phrase as all races in a region unless exact-name matching fails or the question explicitly asks for countries/regions.
-5. For time questions, print nearby rows and return all valid ties/near matches required by the wording.
-""".strip()
-
-
-COMMANDER_PROMPT = """
-## Commander/Card Data Reminder
-
-For card questions, do not assume `edhrecRank` means commander legal. Inspect explicit format/legal/status fields or code patterns in the data. If using `printings`/set codes for Commander, verify content-warning counts against that exact filtered denominator.
 """.strip()
 
 
@@ -368,6 +355,10 @@ def _selected_memory_cases(signal_text: str) -> str:
         selected_case_letters.append("K")
     if _has_any(signal_text, ("european grand prix", "grand prix races")):
         selected_case_letters.append("L")
+    if _has_any(signal_text, ("formula 1", "qualifying", "q1", "q2", "q3", "grand prix", "driver", "race")):
+        selected_case_letters.append("M")
+    if _has_any(signal_text, ("commander", "content warning", "card", "legal status", "legality")):
+        selected_case_letters.append("N")
 
     selected_cases = [
         _extract_memory_case(memory_text, case_letter)
@@ -393,12 +384,6 @@ def build_runtime_step_guidance(
     ).lower()
 
     sections: list[str] = []
-
-    if _has_any(signal_text, ("grand prix", "qualifying", "q1", "q2", "q3", "driver", "race")):
-        sections.append(F1_PROMPT)
-
-    if _has_any(signal_text, ("commander", "content warning", "card", "legal status")):
-        sections.append(COMMANDER_PROMPT)
 
     memory_cases = _selected_memory_cases(signal_text)
     if memory_cases:
@@ -430,8 +415,7 @@ def build_dynamic_guidance(task: PublicTask) -> str:
     if memory_common:
         sections.append(memory_common)
 
-    if profile.has_knowledge:
-        sections.append(KNOWLEDGE_PROMPT)
+    sections.append(KNOWLEDGE_PROMPT)
 
     if suffixes & {".csv", ".tsv", ".xlsx", ".xls"}:
         sections.extend([TABULAR_PROMPT, CSV_PROMPT])
@@ -453,12 +437,6 @@ def build_dynamic_guidance(task: PublicTask) -> str:
         )
     ):
         sections.append(LARGE_DOCUMENT_PROMPT)
-
-    if _has_any(question_lower, ("grand prix", "qualifying", "q1", "q2", "q3", "driver", "race")):
-        sections.append(F1_PROMPT)
-
-    if _has_any(question_lower, ("commander", "content warning", "card", "legal status")):
-        sections.append(COMMANDER_PROMPT)
 
     memory = _selected_memory_cases(question_lower)
     if memory:

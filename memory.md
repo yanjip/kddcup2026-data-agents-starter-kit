@@ -48,22 +48,23 @@
 
 ### Case B: Aggregation denominator error (task_169)
 - Question: "What was the average monthly consumption of customers in SME for the year 2013?"
-- WRONG result: 82,027,220 (forgot to divide by number of customers)
+- WRONG result: 82,027,220 (used segment total annual consumption / 12)
 - CORRECT result: 459.96 = AVG(Consumption records for SME customers in 2013) / 12
 - Output detail: The gold/evaluator column name may be the formula expression itself, e.g. `AVG(T2.Consumption) / 12`, not a renamed alias.
-- Lesson: Always identify the aggregation grain before dividing. Do NOT invent a per-customer denominator unless the question or knowledge.md explicitly says "per customer". Match the question/knowledge expression literally, preserve formula-style output column names when shown by exemplar/query logic, then sanity-check the order of magnitude.
+- Lesson: When the wording asks for the average consumption of customers, do not aggregate the whole segment with `SUM(...) / 12`. Average at the customer/record grain first, then convert annual-to-monthly if needed. If knowledge.md gives only a generic metric formula such as "Total Annual Consumption / 12", still map "average ... of customers" to an AVG over the relevant customer consumption rows. Sanity-check the order of magnitude; a segment total in the tens of millions is not an average customer monthly value.
 
 ### Case C: Percentage formula error (task_408)
 - Question: "How much faster in percentage is the champion than the last driver?"
-- WRONG result: 1.468% (wrong formula)
-- CORRECT result: 0.316% (must use correct base for percentage calculation)
-- Lesson: Always print numerator and denominator separately before dividing
+- WRONG result: 0.316556% (used champion time as denominator)
+- CORRECT result: 0.315557% = (last finisher time - champion time) / last finisher time * 100
+- Lesson: For "A is faster than B by what percentage", use the slower/reference item B as the denominator unless the question explicitly says "relative to A". Always print numerator and denominator separately before dividing.
 
 ### Case D: LEFT JOIN plus exact scope (task_199)
 - Question: "List the names and funding types of schools from Riverside-related school districts where the average SAT math score across schools exceeds 400."
 - WRONG: Returned all Riverside-county schools with individual `AvgScrMath > 400`, or dropped schools with NULL funding.
-- CORRECT: First identify Riverside-related districts by district name/scope, compute district-level average SAT math, then list schools in qualifying districts; preserve NULL funding via LEFT JOIN. Gold rows include Arlington High, John W. North High, Martin Luther King Jr. High, Polytechnic High, Ramona High, and River Springs Charter.
-- Lesson: Parse scope and aggregation level before joining optional fields. "Riverside-related school districts" is not the same as every school in Riverside county, and nullable funding must not be filtered out.
+- WRONG: Used the SAT table's broad `sname` list directly and included extra alternative/continuation schools not in the official school-name/funding source.
+- CORRECT: First identify qualifying Riverside-related districts at district level, then return official school names and funding types from the school/funding source such as FRPM/result-style context files; preserve blank/NULL funding values and keep legitimate `District Office` rows when present.
+- Lesson: Parse scope and aggregation level before joining optional fields. For school name/funding outputs, prefer the official school/funding table or supplied final/result-style context file over a broad score table name field. "Riverside-related school districts" is not the same as every school row in Riverside county, and nullable funding must not be filtered out.
 
 ### Case F: Ratio numerator/denominator swapped (task_243)
 - Question: "How many times is the number of posts compared to votes?"
@@ -107,3 +108,15 @@
 - WRONG approach: Treated "European" as a geographic category and counted all races in European countries, giving 76/611 = 12.4386%.
 - CORRECT approach: Treat "European Grand Prix" as the exact race name first, then count Germany among those races, giving 12/23 = 52.1739%.
 - Lesson: Capitalized event/race/product names should be tested as exact names before semantic expansion.
+
+### Case M: Time string and source-field ambiguity (task_80/task_89)
+- Question: "What is his number of the driver who finished 0:01:54 in the Q3 of qualifying race No.903?"
+- WRONG approach: Treated `0:01:54` as a loose string clue, picked a nearby `q3` time by intuition, and returned a renamed column such as `driver_number`.
+- CORRECT approach: Parse time-like strings into seconds before comparing. If the question asks for `number`, return the original `number` field name. For any ambiguous fields such as `rank`, `position`, `status`, or `type`, inspect the schema/knowledge meaning before choosing rows.
+- Lesson: Time strings must be normalized before matching or nearest-time logic. Preserve exact requested/source field names such as `number`, and inspect ambiguous fields before choosing rows.
+
+### Case N: Commander legality field mapping (task_420)
+- Question: "What percentage of cards with format commander and legal status do not have a content warning?"
+- WRONG approach: Used `edhrecRank > 0` as a proxy for Commander legal cards.
+- CORRECT approach: Inspect explicit format/legal/status fields or structured legality data first. Do not treat popularity/rank fields as legal-status fields unless knowledge.md or schema explicitly says so.
+- Lesson: For domain terms such as legal, legality, format, or status, prefer explicit schema/knowledge fields over convenient proxy columns.

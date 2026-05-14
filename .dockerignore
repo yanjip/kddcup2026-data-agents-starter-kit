@@ -11,6 +11,7 @@ artifacts/
 
 # Public dataset inputs (mounted at runtime via /input)
 public/input/
+public/output/
 demo_samples/
 
 # Evaluation & docs
