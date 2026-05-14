@@ -4,7 +4,7 @@ dataset:
 agent:
   model: qwen3.5-35b-a3b
   api_base: https://dashscope.aliyuncs.com/compatible-mode/v1 
-  api_key: sk-c940fe1e2114483eb5bb753a18e5814d
+  api_key: sk-dfbc2820db72414b956c94b33c07248c
   max_steps: 30
   temperature: 0.3
   # Orchestrator agent specific config
@@ -17,4 +17,4 @@ run:
   output_dir: artifacts/runs
   run_id: example_run_id
   max_workers: 4
-  task_timeout_seconds: 600
+  task_timeout_seconds: 500

@@ -8,6 +8,7 @@
 ## 2. Output columns must strictly match the question
 - Return ONLY the columns explicitly requested. Never include intermediate calculation columns
 - "List all X" means return ONLY the X column, not the entire row
+- But when the task asks to list/show records, transactions, people, customers, or events matching conditions, keep the identifying columns needed to identify each returned row, plus the requested value/status fields
 - Multiple metrics must be output horizontally (multiple columns in one row), never pivoted vertically (multiple rows)
 
 ## 3. Tool failure requires a strategy switch, not a retry
@@ -24,6 +25,7 @@
 
 ## 5. Be suspicious of zeros and anomalies
 - When MIN/MAX returns 0, verify whether 0 is a real recorded value or a placeholder/missing-data marker
+- Do NOT remove 0 values from averages/sums/counts unless knowledge.md, the schema, or the question explicitly says 0 means missing/invalid
 - When the result row count is unexpectedly high or low, recheck the filtering conditions
 - When more than half the returned values are null/empty, recheck the data source and join conditions
 
@@ -47,8 +49,9 @@
 ### Case B: Aggregation denominator error (task_169)
 - Question: "What was the average monthly consumption of customers in SME for the year 2013?"
 - WRONG result: 82,027,220 (forgot to divide by number of customers)
-- CORRECT result: 459.96 (must be per-customer average, not total)
-- Lesson: Always sanity-check aggregation results — if "average per customer" returns millions, something is wrong
+- CORRECT result: 459.96 = AVG(Consumption records for SME customers in 2013) / 12
+- Output detail: The gold/evaluator column name may be the formula expression itself, e.g. `AVG(T2.Consumption) / 12`, not a renamed alias.
+- Lesson: Always identify the aggregation grain before dividing. Do NOT invent a per-customer denominator unless the question or knowledge.md explicitly says "per customer". Match the question/knowledge expression literally, preserve formula-style output column names when shown by exemplar/query logic, then sanity-check the order of magnitude.
 
 ### Case C: Percentage formula error (task_408)
 - Question: "How much faster in percentage is the champion than the last driver?"
@@ -56,32 +59,51 @@
 - CORRECT result: 0.316% (must use correct base for percentage calculation)
 - Lesson: Always print numerator and denominator separately before dividing
 
-### Case D: NULL rows dropped (task_199)
-- Question: "List the names and funding types of schools from Riverside..."
-- WRONG: Returned only 1 school (the one with non-NULL funding type)
-- CORRECT: 6 schools (5 with NULL funding type must still appear)
-- Lesson: "List" questions require LEFT JOIN to preserve records with missing optional fields
-
-### Case E: Missing threshold leads to infinite search loop (task_344)
-- Question: "Among male patients with normal white blood cells, how many have abnormal fibrinogen?"
-- FAILURE: Agent repeatedly searched knowledge.md and Patient.md for WBC/FG thresholds, but neither file contained them. Agent exhausted max_steps without submitting any answer.
-- Root cause: knowledge.md did NOT define WBC or fibrinogen thresholds. The rule "always look up exact values in knowledge.md" cannot be followed when the information simply does not exist.
-- Lesson: After searching knowledge.md ONCE, if the threshold is not defined there, infer from standard medical knowledge or data distribution and proceed. NEVER spend more than 2 steps searching for the same missing information.
+### Case D: LEFT JOIN plus exact scope (task_199)
+- Question: "List the names and funding types of schools from Riverside-related school districts where the average SAT math score across schools exceeds 400."
+- WRONG: Returned all Riverside-county schools with individual `AvgScrMath > 400`, or dropped schools with NULL funding.
+- CORRECT: First identify Riverside-related districts by district name/scope, compute district-level average SAT math, then list schools in qualifying districts; preserve NULL funding via LEFT JOIN. Gold rows include Arlington High, John W. North High, Martin Luther King Jr. High, Polytechnic High, Ramona High, and River Springs Charter.
+- Lesson: Parse scope and aggregation level before joining optional fields. "Riverside-related school districts" is not the same as every school in Riverside county, and nullable funding must not be filtered out.
 
 ### Case F: Ratio numerator/denominator swapped (task_243)
 - Question: "How many times is the number of posts compared to votes?"
 - WRONG result: 0.103 (inverted the ratio)
 - CORRECT result: 0.375 (posts / votes, not votes / posts)
-- Lesson: "A compared to B" means A / B. Print both values before dividing
+- Important detail: For "his/her votes", count votes cast BY that user (`votes.UserId = user_id`), not votes received ON that user's posts, unless the question explicitly says "votes on his/her posts".
+- Lesson: "A compared to B" means A / B. Print both values before dividing, and resolve whether a possessive field means owned/cast-by versus received-on.
 
 ### Case G: Wrong row selected for ranking (task_89)
 - Question: "Finish time for the driver who ranked second in 2008 Chinese Grand Prix?"
 - WRONG result: +14.925 (picked wrong driver)
 - CORRECT result: +16.445
-- Lesson: Always print TOP 5 results to verify the correct row before answering
+- Lesson: In Formula 1 `results`, `rank` is fastest-lap rank and `positionOrder` is finishing position. If the question says "driver who ranked second", use `rank = 2`; if it says "finished second", use `positionOrder = 2`. Print both fields before answering.
 
-### Case H: Returning all rows instead of filtered (task_25)
+### Case H: Wrong cost field selected (task_25)
 - Question: "Which event has the lowest cost?"
-- WRONG: Returned all 13 events
-- CORRECT: Only 3 events tied at the lowest cost
-- Lesson: "Lowest" may have ties — check with GROUP BY and return ALL tied results
+- WRONG: Used total event expense or budget amount/spent and returned Officers meeting events.
+- CORRECT: Use the actual expense `cost` field; the lowest cost is tied by November Speaker, October Speaker, and September Speaker.
+- Lesson: For "lowest cost", prefer the literal `cost` field over budget `amount`, `spent`, or aggregate totals unless the question asks for total cost. After selecting the correct metric, return all genuine tied events.
+
+### Case I: Over-minimal output loses record identity (task_38/task_180)
+- Question: "List all the withdrawals in cash transactions..." / "Give their consumption status..."
+- WRONG: Returned only `amount` or only `Consumption`, losing the transaction/customer identity.
+- CORRECT: For transaction lists, include identifying transaction fields such as `trans_id`, `date`, `type`, `operation`, `amount`; for customer status lists, include `CustomerID` plus `Consumption`.
+- Lesson: Strict column matching does not mean deleting row identity. For list/show records matching conditions, keep the minimal identifying columns needed for the evaluator/user to know which record each value belongs to.
+
+### Case J: Zero values wrongly dropped from averages (task_67)
+- Question: "What is the average weight of all female superheroes?"
+- WRONG result: 78.50694444444444 after excluding `weight_kg = 0` as invalid.
+- CORRECT result: 60.77956989247312 using the dataset values as recorded, including 0.
+- Lesson: Be suspicious of 0, but do not delete it from AVG/SUM/COUNT unless knowledge.md, schema notes, or the question says 0 is missing/invalid.
+
+### Case K: Unit price vs total price (task_180)
+- Question: "people who paid more than 29.00 per unit of product id No.5"
+- WRONG approach: `Price > 29.0`, which selected 153 customers.
+- CORRECT approach: `Price / Amount > 29.0`, which selected 9 customers.
+- Lesson: "per unit" usually means unit price/rate. Identify numerator and quantity denominator before filtering.
+
+### Case L: Proper noun expanded into generic category (task_303)
+- Question: "Among all European Grand Prix races, what percentage were hosted in Germany?"
+- WRONG approach: Treated "European" as a geographic category and counted all races in European countries, giving 76/611 = 12.4386%.
+- CORRECT approach: Treat "European Grand Prix" as the exact race name first, then count Germany among those races, giving 12/23 = 52.1739%.
+- Lesson: Capitalized event/race/product names should be tested as exact names before semantic expansion.

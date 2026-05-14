@@ -217,6 +217,13 @@ def parse_model_step(raw_response: str) -> ModelStep:
     thought = payload.get("thought", "")
     action = payload.get("action")
     action_input = payload.get("action_input", {})
+    if action is None and "answer" in payload:
+        action = "answer"
+        raw_answer = payload["answer"]
+        action_input = raw_answer if isinstance(raw_answer, dict) else {"answer": raw_answer}
+    elif action is None and any(key in payload for key in ("value", "result", "count", "output", "data")):
+        action = "answer"
+        action_input = dict(payload)
     if not isinstance(thought, str):
         raise ValueError("thought must be a string.")
     if action is None:
@@ -231,7 +238,7 @@ def parse_model_step(raw_response: str) -> ModelStep:
     # at the top level instead of inside action_input.
     # e.g. {"action":"execute_python","code":"..."} instead of
     #      {"action":"execute_python","action_input":{"code":"..."}}
-    _reserved_keys = {"thought", "action", "action_input"}
+    _reserved_keys = {"thought", "action", "action_input", "answer"}
     stray_keys = {k: v for k, v in payload.items() if k not in _reserved_keys}
     if stray_keys:
         for k, v in stray_keys.items():

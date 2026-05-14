@@ -96,9 +96,59 @@ def _calculate_math(task: PublicTask, action_input: dict[str, Any]) -> ToolExecu
     return ToolExecutionResult(ok=True, content=math_calculate(expression))
 
 
+def _is_scalar_answer_value(value: Any) -> bool:
+    return value is None or isinstance(value, (str, int, float, bool))
+
+
+def _normalize_answer_input(action_input: dict[str, Any]) -> tuple[list[str], list[list[Any]]]:
+    normalized = dict(action_input)
+
+    if "rows" not in normalized and "data" in normalized:
+        normalized["rows"] = normalized["data"]
+
+    columns = normalized.get("columns")
+    rows = normalized.get("rows")
+    if isinstance(columns, list) and isinstance(rows, list):
+        return list(columns), list(rows)
+
+    for wrapper_key in ("output", "answer"):
+        wrapped = normalized.get(wrapper_key)
+        if isinstance(wrapped, dict):
+            return _normalize_answer_input(wrapped)
+        if isinstance(wrapped, list):
+            if wrapped and all(isinstance(item, dict) for item in wrapped):
+                inferred_columns: list[str] = []
+                for item in wrapped:
+                    for key in item:
+                        if key not in inferred_columns:
+                            inferred_columns.append(str(key))
+                inferred_rows = [
+                    [item.get(column) for column in inferred_columns]
+                    for item in wrapped
+                    if isinstance(item, dict)
+                ]
+                return inferred_columns, inferred_rows
+            if wrapped and all(isinstance(item, list) for item in wrapped):
+                width = max(len(item) for item in wrapped)
+                inferred_columns = [f"column_{idx + 1}" for idx in range(width)]
+                return inferred_columns, list(wrapped)
+            if _is_scalar_answer_value(wrapped):
+                return [wrapper_key], [[wrapped]]
+
+    scalar_items = [
+        (str(key), value)
+        for key, value in normalized.items()
+        if key not in {"thought", "action", "action_input", "columns", "rows", "data"}
+        and _is_scalar_answer_value(value)
+    ]
+    if scalar_items:
+        return [key for key, _ in scalar_items], [[value for _, value in scalar_items]]
+
+    raise ValueError("answer.columns must be a non-empty list of strings.")
+
+
 def _answer(_: PublicTask, action_input: dict[str, Any]) -> ToolExecutionResult:
-    columns = action_input.get("columns")
-    rows = action_input.get("rows")
+    columns, rows = _normalize_answer_input(action_input)
     if not isinstance(columns, list) or not columns or not all(isinstance(item, str) for item in columns):
         raise ValueError("answer.columns must be a non-empty list of strings.")
     if not isinstance(rows, list):
